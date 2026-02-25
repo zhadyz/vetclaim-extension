@@ -5,84 +5,263 @@
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
-      width: 320px;
+      width: 340px;
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
       background: #0a1628;
       color: #e2e8f0;
-      padding: 16px;
     }
     .header {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      margin-bottom: 16px;
-      padding-bottom: 12px;
+      padding: 14px 16px 12px;
       border-bottom: 1px solid #1e3a5f;
+      background: #0f1d2f;
     }
     .header h1 {
-      font-size: 14px;
-      font-weight: 600;
+      font-size: 15px;
+      font-weight: 700;
       color: #f0c040;
     }
     .header span {
       font-size: 11px;
       color: #64748b;
     }
-    .status {
+
+    /* Status rows */
+    .status-row {
       display: flex;
       align-items: center;
       gap: 8px;
-      padding: 10px 12px;
-      border-radius: 8px;
-      background: #111d2e;
-      margin-bottom: 12px;
+      padding: 10px 16px;
       font-size: 12px;
+      border-bottom: 1px solid #111d2e;
     }
     .dot {
-      width: 8px;
-      height: 8px;
+      width: 8px; height: 8px;
       border-radius: 50%;
       flex-shrink: 0;
     }
-    .dot.connected { background: #22c55e; }
-    .dot.disconnected { background: #ef4444; }
-    .info {
-      font-size: 11px;
+    .dot.green  { background: #22c55e; }
+    .dot.red    { background: #ef4444; }
+    .dot.yellow { background: #eab308; }
+    .status-label { color: #94a3b8; }
+    .status-value { margin-left: auto; font-weight: 600; }
+
+    /* Stats grid */
+    .stats {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 8px;
+      padding: 12px 16px;
+    }
+    .stat {
+      background: #111d2e;
+      border-radius: 8px;
+      padding: 10px 8px;
+      text-align: center;
+    }
+    .stat-value {
+      font-size: 20px;
+      font-weight: 700;
+      color: #f0c040;
+    }
+    .stat-label {
+      font-size: 9px;
+      color: #64748b;
+      text-transform: uppercase;
+      margin-top: 2px;
+    }
+
+    /* Claims list */
+    .claims-section {
+      padding: 0 16px 8px;
+    }
+    .section-title {
+      font-size: 10px;
+      color: #64748b;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 6px;
+    }
+    .claim-card {
+      background: #111d2e;
+      border-radius: 8px;
+      padding: 10px 12px;
+      margin-bottom: 6px;
+    }
+    .claim-title {
+      font-size: 12px;
+      font-weight: 600;
+      margin-bottom: 4px;
+    }
+    .claim-phase {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 10px;
       color: #94a3b8;
-      line-height: 1.5;
+      margin-bottom: 4px;
     }
-    .info a {
-      color: #60a5fa;
-      text-decoration: none;
+    .bar {
+      flex: 1;
+      height: 3px;
+      background: #1e3a5f;
+      border-radius: 2px;
+      overflow: hidden;
     }
-    .info a:hover { text-decoration: underline; }
-    #claim-count {
+    .bar-fill {
+      height: 100%;
+      background: #f0c040;
+      border-radius: 2px;
+    }
+    .tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 3px;
+    }
+    .tag {
+      font-size: 9px;
+      padding: 1px 5px;
+      border-radius: 3px;
+      background: #1e3a5f;
+      color: #94a3b8;
+    }
+    .tag.warn {
+      background: #7c2d12;
+      color: #fdba74;
+    }
+
+    /* Ratings */
+    .ratings-section {
+      padding: 0 16px 10px;
+    }
+    .rating-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 11px;
+      padding: 4px 0;
+      border-bottom: 1px solid #111d2e;
+    }
+    .rating-row:last-child { border: none; }
+    .rating-name { color: #cbd5e1; }
+    .rating-pct {
       font-weight: 600;
       color: #f0c040;
+    }
+
+    /* Actions */
+    .actions {
+      padding: 10px 16px 14px;
+      display: flex;
+      gap: 8px;
+    }
+    .btn {
+      flex: 1;
+      padding: 8px 0;
+      border: none;
+      border-radius: 6px;
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+      text-align: center;
+      text-decoration: none;
+    }
+    .btn-primary {
+      background: #f0c040;
+      color: #0a1628;
+    }
+    .btn-primary:hover { background: #e0b030; }
+    .btn-primary:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    .btn-secondary {
+      background: #1e3a5f;
+      color: #e2e8f0;
+    }
+    .btn-secondary:hover { background: #264a6f; }
+
+    .footer {
+      padding: 8px 16px 12px;
+      border-top: 1px solid #1e3a5f;
+      font-size: 10px;
+      color: #475569;
+      text-align: center;
+    }
+    .footer a { color: #60a5fa; text-decoration: none; }
+    .footer a:hover { text-decoration: underline; }
+
+    .empty {
+      padding: 16px;
+      text-align: center;
+      color: #64748b;
+      font-size: 12px;
     }
   </style>
 </head>
 <body>
+
   <div class="header">
-    <div>
-      <h1>VetClaim Extension</h1>
-      <span>VA.gov Claim Sync</span>
+    <h1>VetClaim</h1>
+    <span>VA.gov Claim Sync</span>
+  </div>
+
+  <!-- Connection status -->
+  <div class="status-row">
+    <span class="dot" id="vc-dot"></span>
+    <span class="status-label">VetClaim</span>
+    <span class="status-value" id="vc-status">…</span>
+  </div>
+  <div class="status-row">
+    <span class="dot" id="va-dot"></span>
+    <span class="status-label">VA.gov</span>
+    <span class="status-value" id="va-status">…</span>
+  </div>
+
+  <!-- Stats -->
+  <div class="stats" id="stats-grid">
+    <div class="stat">
+      <div class="stat-value" id="stat-rating">—</div>
+      <div class="stat-label">Rating</div>
+    </div>
+    <div class="stat">
+      <div class="stat-value" id="stat-claims">0</div>
+      <div class="stat-label">Claims</div>
+    </div>
+    <div class="stat">
+      <div class="stat-value" id="stat-appeals">0</div>
+      <div class="stat-label">Appeals</div>
     </div>
   </div>
-  <div class="status" id="status-box">
-    <span class="dot disconnected" id="status-dot"></span>
-    <span id="status-text">Checking connection...</span>
+
+  <!-- Claims -->
+  <div class="claims-section" id="claims-section" style="display:none">
+    <div class="section-title">Active Claims</div>
+    <div id="claims-list"></div>
   </div>
-  <div class="status">
-    <span>Claims synced:</span>
-    <span id="claim-count">0</span>
+
+  <!-- Ratings -->
+  <div class="ratings-section" id="ratings-section" style="display:none">
+    <div class="section-title">Service-Connected Disabilities</div>
+    <div id="ratings-list"></div>
   </div>
-  <p class="info">
+
+  <!-- No data state -->
+  <div class="empty" id="empty-state" style="display:none">
     Visit <a href="https://www.va.gov/claim-or-appeal-status" target="_blank">VA.gov Claim Status</a>
-    while logged in to sync your claims automatically.
-    <br><br>
-    Data syncs to your <a href="https://vetclaimservices.com/dashboard" target="_blank">VetClaim dashboard</a>.
-  </p>
+    while logged in to pull your data.
+  </div>
+
+  <!-- Actions -->
+  <div class="actions">
+    <button class="btn btn-primary" id="sync-btn">Sync Now</button>
+    <a class="btn btn-secondary" href="https://vetclaimservices.com/dashboard" target="_blank">Dashboard</a>
+  </div>
+
+  <div class="footer">
+    Data syncs to <a href="https://vetclaimservices.com" target="_blank">vetclaimservices.com</a>
+    &middot; <a href="https://github.com/zhadyz/vetclaim-extension" target="_blank">GitHub</a>
+  </div>
+
   <script src="popup.js"></script>
 </body>
 </html>

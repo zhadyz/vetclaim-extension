@@ -1,430 +1,358 @@
 /**
- * VA Intelligence Background Service Worker
- * Coordinates data flow between content script, VetClaim API, and storage.
- * Syncs scraped VA.gov claim data to the VetClaim backend.
+ * VetClaim Background Service Worker
+ * Uses webRequest to detect VA.gov activity, then directly fetches
+ * VA.gov API endpoints (claims, ratings, appeals) and syncs to VetClaim.
  */
 
-// Configuration — points to VetClaim Services API
+// ─── Config ─────────────────────────────────────────────────────────────
 const CONFIG = {
-  apiBaseUrl: 'https://vetclaimservices.com/v1',
+  apiBaseUrl: 'https://api.vetclaimservices.com/v1',
   webAppUrl: 'https://vetclaimservices.com',
-  syncInterval: 300000 // 5 minutes
+  vaApiBase: 'https://api.va.gov',
+  syncInterval: 300000,   // 5-minute periodic re-sync to VetClaim
+  fetchCooldown: 60000    // Don't re-pull VA data within 60 s
 };
 
-// State management
-let syncTimer = null;
+const VA_ENDPOINTS = {
+  claims:             '/v0/benefits_claims',
+  ratedDisabilities:  '/v0/rated_disabilities',
+  appeals:            '/v0/appeals'
+};
 
-// Initialize on extension install
+let lastVaFetch = 0;
+
+// ─── Install ────────────────────────────────────────────────────────────
 chrome.runtime.onInstalled.addListener((details) => {
-  console.log('[VetClaim Extension] Extension installed:', details.reason);
-
+  console.log('[VetClaim] Installed:', details.reason);
   if (details.reason === 'install') {
-    initializeExtension();
-  } else if (details.reason === 'update') {
-    console.log('[VetClaim Extension] Updated to version:', chrome.runtime.getManifest().version);
-  }
-});
-
-// Initialize extension
-async function initializeExtension() {
-  await chrome.storage.local.set({
-    extensionEnabled: true,
-    notificationsEnabled: true,
-    syncEnabled: true,
-    lastSync: null,
-    userData: null,
-    accessToken: null,
-    refreshToken: null
-  });
-
-  // Open VetClaim login page for auth
-  chrome.tabs.create({
-    url: `${CONFIG.webAppUrl}/login?extension=true`
-  });
-}
-
-// Listen for messages from content scripts
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  console.log('[VetClaim Extension] Message received:', message.type);
-
-  if (message.type === 'CLAIM_DATA_INTERCEPTED') {
-    handleClaimDataIntercepted(message, sender)
-      .then(result => sendResponse(result))
-      .catch(error => sendResponse({ error: error.message }));
-    return true; // Async response
-  }
-
-  if (message.type === 'AI_ACTION_TRIGGERED') {
-    handleAIAction(message)
-      .then(result => sendResponse(result))
-      .catch(error => sendResponse({ error: error.message }));
-    return true;
-  }
-
-  if (message.type === 'REQUEST_AUTH_STATUS') {
-    checkAuthStatus()
-      .then(status => sendResponse(status))
-      .catch(error => sendResponse({ error: error.message }));
-    return true;
-  }
-
-  // Allow the web app to pass auth tokens to the extension
-  if (message.type === 'VETCLAIM_AUTH_TOKENS') {
     chrome.storage.local.set({
-      accessToken: message.accessToken,
-      refreshToken: message.refreshToken,
-      userData: message.userData
-    }).then(() => {
-      console.log('[VetClaim Extension] Auth tokens stored');
-      sendResponse({ success: true });
+      accessToken: null,
+      refreshToken: null,
+      userData: null,
+      vaClaims: [],
+      vaRatings: null,
+      vaAppeals: [],
+      vaLoggedIn: false,
+      lastSync: null
     });
-    return true;
+    // Open VetClaim login so user can link their account
+    chrome.tabs.create({ url: `${CONFIG.webAppUrl}/login?extension=true` });
   }
 });
 
-/**
- * Handle intercepted claim data
- */
-async function handleClaimDataIntercepted(message, sender) {
-  console.log('[VetClaim Extension] Processing claim data:', message.data.dataType);
+// ─── Detect VA.gov API activity via webRequest ──────────────────────────
+// When the user is on VA.gov and the page loads claim data, we detect it
+// and trigger a direct pull of ALL VA endpoints.
+chrome.webRequest.onCompleted.addListener(
+  (details) => {
+    if (details.statusCode < 200 || details.statusCode >= 300) return;
+    const now = Date.now();
+    if (now - lastVaFetch < CONFIG.fetchCooldown) return;
+    lastVaFetch = now;
+    console.log('[VetClaim] VA.gov API activity detected → pulling data');
+    fetchAllVaData();
+  },
+  { urls: ['*://api.va.gov/v0/benefits_claims*', '*://api.va.gov/v0/rated_disabilities*'] }
+);
 
-  const { data } = message;
-
-  // Store raw data locally
-  await storeClaimData(data);
-
-  // Check if user is authenticated with VetClaim
-  const authStatus = await checkAuthStatus();
-
-  if (!authStatus.authenticated) {
-    console.log('[VetClaim Extension] User not authenticated, skipping sync');
-    return {
-      success: true,
-      aiInsights: getBasicInsights(data)
-    };
-  }
-
-  // Sync claim data to VetClaim API
+// ─── Direct VA.gov Fetch ────────────────────────────────────────────────
+// Because we have host_permissions for api.va.gov, Chrome includes the
+// user's session cookies automatically with credentials: 'include'.
+async function fetchVaEndpoint(path) {
   try {
-    await syncClaimToVetClaim(data, authStatus.accessToken);
+    const res = await fetch(`${CONFIG.vaApiBase}${path}`, {
+      credentials: 'include',
+      headers: { 'Accept': 'application/json' }
+    });
 
-    return {
-      success: true,
-      synced: true,
-      aiInsights: getBasicInsights(data)
-    };
-
-  } catch (error) {
-    console.error('[VetClaim Extension] Sync error:', error);
-    return {
-      success: false,
-      error: error.message,
-      aiInsights: getBasicInsights(data)
-    };
-  }
-}
-
-/**
- * Store claim data in local storage
- */
-async function storeClaimData(data) {
-  const storageKey = `claim_data_${data.dataType}`;
-
-  await chrome.storage.local.set({
-    [storageKey]: {
-      raw: data.raw,
-      structured: data.structured,
-      lastUpdated: Date.now()
-    }
-  });
-
-  console.log('[VetClaim Extension] Claim data stored:', storageKey);
-}
-
-/**
- * Sync a single claim to VetClaim API
- */
-async function syncClaimToVetClaim(data, accessToken) {
-  console.log('[VetClaim Extension] Syncing to VetClaim API...');
-
-  const response = await fetch(`${CONFIG.apiBaseUrl}/va-sync`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${accessToken}`,
-      'X-Extension-Version': chrome.runtime.getManifest().version
-    },
-    body: JSON.stringify({
-      claimData: data.structured,
-      rawData: data.raw,
-      dataType: data.dataType,
-      timestamp: Date.now()
-    })
-  });
-
-  if (!response.ok) {
-    if (response.status === 401) {
-      // Try to refresh the token
-      const refreshed = await refreshAuthToken();
-      if (refreshed) {
-        // Retry with new token
-        const retryResponse = await fetch(`${CONFIG.apiBaseUrl}/va-sync`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${refreshed.accessToken}`,
-            'X-Extension-Version': chrome.runtime.getManifest().version
-          },
-          body: JSON.stringify({
-            claimData: data.structured,
-            rawData: data.raw,
-            dataType: data.dataType,
-            timestamp: Date.now()
-          })
-        });
-        if (!retryResponse.ok) {
-          throw new Error(`Sync failed after token refresh: ${retryResponse.statusText}`);
-        }
-        return await retryResponse.json();
+    if (!res.ok) {
+      if (res.status === 401 || res.status === 403) {
+        await chrome.storage.local.set({ vaLoggedIn: false });
       }
-      throw new Error('Authentication failed. Please log in to VetClaim Services.');
+      return null;
     }
-    throw new Error(`Sync failed: ${response.statusText}`);
+
+    await chrome.storage.local.set({ vaLoggedIn: true });
+    return await res.json();
+  } catch (err) {
+    console.error(`[VetClaim] Fetch ${path} failed:`, err);
+    return null;
   }
-
-  const result = await response.json();
-  console.log('[VetClaim Extension] Sync complete');
-
-  return result;
 }
 
-/**
- * Check if user is authenticated with VetClaim
- */
-async function checkAuthStatus() {
-  const storage = await chrome.storage.local.get(['accessToken', 'refreshToken', 'userData']);
+async function fetchAllVaData() {
+  console.log('[VetClaim] Fetching VA.gov endpoints…');
 
-  if (!storage.accessToken) {
-    return { authenticated: false };
+  const [claimsRes, ratingsRes, appealsRes] = await Promise.allSettled([
+    fetchVaEndpoint(VA_ENDPOINTS.claims),
+    fetchVaEndpoint(VA_ENDPOINTS.ratedDisabilities),
+    fetchVaEndpoint(VA_ENDPOINTS.appeals)
+  ]);
+
+  const claimsJson  = claimsRes.status  === 'fulfilled' ? claimsRes.value  : null;
+  const ratingsJson = ratingsRes.status === 'fulfilled' ? ratingsRes.value : null;
+  const appealsJson = appealsRes.status === 'fulfilled' ? appealsRes.value : null;
+
+  // ── Parse claims ──────────────────────────────────────────────────────
+  let parsedClaims = [];
+  if (claimsJson?.data) {
+    const items = Array.isArray(claimsJson.data) ? claimsJson.data : [claimsJson.data];
+    parsedClaims = items
+      .filter(d => d.type === 'claim' || d.type === 'evss_claims')
+      .map(parseBenefitClaim);
   }
 
+  // ── Parse rated disabilities ──────────────────────────────────────────
+  let parsedRatings = null;
+  if (ratingsJson?.data?.attributes) {
+    const attrs = ratingsJson.data.attributes;
+    const indiv = attrs.individual_ratings || attrs.individualRatings || [];
+    parsedRatings = {
+      combinedRating: attrs.combined_disability_rating ?? attrs.combinedDisabilityRating ?? null,
+      individualRatings: indiv.map(r => ({
+        name:           r.name || r.diagnostic_text || r.diagnosticText || '',
+        rating:         r.rating_percentage ?? r.ratingPercentage ?? null,
+        diagnosticCode: r.diagnostic_type_code || r.diagnosticCode || '',
+        effectiveDate:  r.effective_date || r.effectiveDate || '',
+        static:         r.static_ind ?? r.staticInd ?? false
+      }))
+    };
+  }
+
+  // ── Parse appeals ─────────────────────────────────────────────────────
+  let parsedAppeals = [];
+  if (appealsJson?.data && Array.isArray(appealsJson.data)) {
+    parsedAppeals = appealsJson.data.map(a => ({
+      appealId: a.id,
+      type:     a.type,
+      status:   a.attributes?.status,
+      active:   a.attributes?.active,
+      updated:  a.attributes?.updated,
+      issues:   (a.attributes?.issues || []).map(i => ({
+        description:    i.description,
+        diagnosticCode: i.diagnosticCode,
+        lastAction:     i.lastAction,
+        date:           i.date
+      })),
+      events: a.attributes?.events || [],
+      alerts: a.attributes?.alerts || []
+    }));
+  }
+
+  // ── Persist locally ───────────────────────────────────────────────────
+  await chrome.storage.local.set({
+    vaClaims:    parsedClaims,
+    vaRatings:   parsedRatings,
+    vaAppeals:   parsedAppeals,
+    vaLastFetch: Date.now()
+  });
+
+  console.log(
+    `[VetClaim] Fetched ${parsedClaims.length} claims, ` +
+    `${parsedRatings ? parsedRatings.individualRatings.length : 0} ratings, ` +
+    `${parsedAppeals.length} appeals`
+  );
+
+  // ── Sync to VetClaim API ──────────────────────────────────────────────
+  const auth = await checkAuthStatus();
+  if (auth.authenticated && parsedClaims.length > 0) {
+    await syncClaimsToVetClaim(parsedClaims, claimsJson, auth.accessToken);
+  }
+
+  // ── Notify any open VA.gov tabs (for overlay) ─────────────────────────
+  const vaTabs = await chrome.tabs.query({ url: '*://www.va.gov/*' });
+  for (const tab of vaTabs) {
+    chrome.tabs.sendMessage(tab.id, {
+      type: 'VA_DATA_READY',
+      claims: parsedClaims,
+      ratings: parsedRatings
+    }).catch(() => {});
+  }
+
+  if (parsedClaims.length > 0) {
+    sendNotification('Claims Synced', `${parsedClaims.length} claim(s) pulled from VA.gov`);
+  }
+}
+
+// ─── Claim Parser ───────────────────────────────────────────────────────
+function parseBenefitClaim(data) {
+  const a = data.attributes || {};
   return {
-    authenticated: true,
-    accessToken: storage.accessToken,
-    refreshToken: storage.refreshToken,
-    userData: storage.userData
+    claimId:                data.id,
+    claimType:              a.claimType,
+    claimTypeCode:          a.claimTypeCode,
+    status:                 a.status,
+    phase:                  a.phase,
+    phaseChangeDate:        a.phaseChangeDate,
+    dateInitiated:          a.claimDate,
+    dateFiled:              a.dateFiled,
+    estimatedDecisionDate:  a.estimatedDecisionDate,
+    developmentLetterSent:  a.developmentLetterSent || false,
+    decisionLetterSent:     a.decisionLetterSent || false,
+    documentsNeeded:        a.documentsNeeded || false,
+    waiverSubmitted:        a.waiverSubmitted || false,
+    contentions: (a.contentions || []).map(c => ({
+      name:           c.name,
+      code:           c.code,
+      classification: c.classification,
+      status:         c.status
+    })),
+    supportingDocuments: a.supportingDocuments || [],
+    trackedItems:        a.trackedItems || [],
+    jurisdiction:        a.jurisdiction,
+    eventsTimeline:      a.eventsTimeline || [],
+    claimPhaseDates:     a.claimPhaseDates || {},
+    updatedAt:           a.updatedAt,
+    createdAt:           a.createdAt
   };
 }
 
-/**
- * Refresh authentication token via VetClaim API
- */
-async function refreshAuthToken() {
-  const storage = await chrome.storage.local.get(['refreshToken']);
+// ─── VetClaim API Sync ──────────────────────────────────────────────────
+async function syncClaimsToVetClaim(claims, rawJson, accessToken) {
+  try {
+    let res;
 
-  if (!storage.refreshToken) {
-    return null;
+    if (claims.length === 1) {
+      res = await fetch(`${CONFIG.apiBaseUrl}/va-sync`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${accessToken}`,
+          'X-Extension-Version': chrome.runtime.getManifest().version
+        },
+        body: JSON.stringify({
+          claimData: claims[0],
+          rawData: rawJson?.data ?? null,
+          dataType: 'benefit_claim',
+          timestamp: Date.now()
+        })
+      });
+    } else {
+      res = await fetch(`${CONFIG.apiBaseUrl}/va-sync/batch`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${accessToken}`,
+          'X-Extension-Version': chrome.runtime.getManifest().version
+        },
+        body: JSON.stringify({
+          claims: claims.map((c, i) => ({
+            structured: c,
+            raw: rawJson?.data?.[i] ?? null,
+            lastUpdated: Date.now()
+          })),
+          timestamp: Date.now()
+        })
+      });
+    }
+
+    if (res && res.status === 401) {
+      const refreshed = await refreshAuthToken();
+      if (refreshed) {
+        return syncClaimsToVetClaim(claims, rawJson, refreshed.accessToken);
+      }
+      return;
+    }
+
+    await chrome.storage.local.set({ lastSync: Date.now() });
+    console.log('[VetClaim] Sync complete');
+  } catch (err) {
+    console.error('[VetClaim] Sync error:', err);
   }
+}
+
+// ─── Auth Helpers ───────────────────────────────────────────────────────
+async function checkAuthStatus() {
+  const s = await chrome.storage.local.get(['accessToken', 'refreshToken', 'userData']);
+  if (!s.accessToken) return { authenticated: false };
+  return { authenticated: true, ...s };
+}
+
+async function refreshAuthToken() {
+  const s = await chrome.storage.local.get(['refreshToken']);
+  if (!s.refreshToken) return null;
 
   try {
-    const response = await fetch(`${CONFIG.apiBaseUrl}/auth/refresh`, {
+    const res = await fetch(`${CONFIG.apiBaseUrl}/auth/refresh`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        refreshToken: storage.refreshToken
-      })
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refreshToken: s.refreshToken })
     });
 
-    if (!response.ok) {
-      // Refresh failed — clear tokens
+    if (!res.ok) {
       await chrome.storage.local.remove(['accessToken', 'refreshToken', 'userData']);
       return null;
     }
 
-    const result = await response.json();
-    const data = result.data || result;
-
-    // Store new tokens
+    const json = await res.json();
+    const data = json.data || json;
     await chrome.storage.local.set({
-      accessToken: data.accessToken,
+      accessToken:  data.accessToken,
       refreshToken: data.refreshToken
     });
-
     return data;
-  } catch (error) {
-    console.error('[VetClaim Extension] Token refresh failed:', error);
+  } catch (err) {
+    console.error('[VetClaim] Token refresh failed:', err);
     return null;
   }
 }
 
-/**
- * Get basic insights without AI (for unauthenticated users)
- */
-function getBasicInsights(data) {
-  const structured = data.structured;
+// ─── Message Handler ────────────────────────────────────────────────────
+chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  switch (msg.type) {
+    // Auth tokens from web app via auth-bridge.js
+    case 'VETCLAIM_AUTH_TOKENS':
+      chrome.storage.local.set({
+        accessToken:  msg.accessToken,
+        refreshToken: msg.refreshToken,
+        userData:     msg.userData
+      }).then(() => sendResponse({ success: true }));
+      return true;
 
-  return {
-    claimId: structured.claimId,
-    status: 'basic',
-    confidenceScore: 50,
-    timeline: {
-      daysToDecision: calculateBasicTimeline(structured),
-      approvalProbability: 70,
-      similarClaims: 0,
-      keyFactors: ['Based on average processing times']
-    },
-    risks: identifyBasicRisks(structured),
-    recommendations: [{
-      title: 'Get AI-Powered Analysis',
-      description: 'Log in to VetClaim Services for predictive timelines, risk assessment, and personalized recommendations.',
-      impact: 'high',
-      action: 'login',
-      buttonText: 'Log In'
-    }],
-    missingBenefits: [],
-    isBasic: true
-  };
-}
+    // Popup / content script asks for auth status
+    case 'REQUEST_AUTH_STATUS':
+      checkAuthStatus().then(sendResponse);
+      return true;
 
-function calculateBasicTimeline(claimData) {
-  const phaseTimelines = {
-    1: 120,
-    2: 90,
-    3: 60,
-    4: 30,
-    5: 14,
-    6: 7,
-    7: 0
-  };
+    // Popup / content script asks for cached VA data
+    case 'REQUEST_VA_DATA':
+      chrome.storage.local.get([
+        'vaClaims', 'vaRatings', 'vaAppeals', 'vaLoggedIn', 'vaLastFetch', 'lastSync'
+      ]).then(sendResponse);
+      return true;
 
-  return phaseTimelines[claimData.phase] || 90;
-}
-
-function identifyBasicRisks(claimData) {
-  const risks = [];
-
-  if (claimData.documentsNeeded) {
-    risks.push({
-      title: 'Documents Required',
-      description: 'VA is waiting for additional documentation from you.',
-      severity: 'high',
-      action: 'check-documents',
-      actionText: 'View Requirements'
-    });
-  }
-
-  if (claimData.jurisdiction === 'National Work Queue') {
-    risks.push({
-      title: 'National Work Queue',
-      description: 'Claims in the national queue typically take longer to process.',
-      severity: 'medium',
-      action: null,
-      actionText: null
-    });
-  }
-
-  return risks;
-}
-
-/**
- * Handle AI action triggers
- */
-async function handleAIAction(message) {
-  console.log('[VetClaim Extension] Handling action:', message.action);
-
-  const { action } = message;
-
-  switch (action) {
-    case 'detailed-report':
-    case 'login':
-      return { success: true, openUrl: true };
-
-    case 'export-strategy':
-      return { success: true, openUrl: true };
-
-    case 'file-supplemental':
-      return { success: true, openUrl: true };
+    // Manual "Sync Now" from popup
+    case 'TRIGGER_VA_FETCH':
+      lastVaFetch = 0; // bypass cooldown
+      fetchAllVaData()
+        .then(() => sendResponse({ success: true }))
+        .catch(e => sendResponse({ error: e.message }));
+      return true;
 
     default:
-      return { success: true };
+      return false;
   }
-}
+});
 
-/**
- * Send browser notification
- */
+// ─── Periodic Re-sync ───────────────────────────────────────────────────
+setInterval(async () => {
+  const auth = await checkAuthStatus();
+  const { vaClaims } = await chrome.storage.local.get('vaClaims');
+  if (auth.authenticated && vaClaims?.length > 0) {
+    console.log('[VetClaim] Periodic re-sync…');
+    await syncClaimsToVetClaim(vaClaims, null, auth.accessToken);
+  }
+}, CONFIG.syncInterval);
+
+// ─── Notification Helper ────────────────────────────────────────────────
 function sendNotification(title, message) {
   chrome.notifications.create({
     type: 'basic',
     iconUrl: 'icons/icon128.png',
-    title: title,
-    message: message,
-    priority: 2,
-    requireInteraction: true
+    title,
+    message,
+    priority: 1
   });
 }
 
-/**
- * Setup periodic sync
- */
-function setupPeriodicSync() {
-  if (syncTimer) {
-    clearInterval(syncTimer);
-  }
-
-  syncTimer = setInterval(async () => {
-    console.log('[VetClaim Extension] Running periodic sync...');
-
-    const authStatus = await checkAuthStatus();
-    if (authStatus.authenticated) {
-      await syncAllClaimData(authStatus.accessToken);
-    }
-  }, CONFIG.syncInterval);
-}
-
-/**
- * Sync all stored claim data with VetClaim API
- */
-async function syncAllClaimData(accessToken) {
-  try {
-    const storage = await chrome.storage.local.get(null);
-    const claimDataKeys = Object.keys(storage).filter(k => k.startsWith('claim_data_'));
-
-    const claims = claimDataKeys
-      .map(key => storage[key])
-      .filter(item => item.structured && item.structured.claimId);
-
-    if (claims.length === 0) {
-      console.log('[VetClaim Extension] No claim data to sync');
-      return;
-    }
-
-    await fetch(`${CONFIG.apiBaseUrl}/va-sync/batch`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${accessToken}`
-      },
-      body: JSON.stringify({
-        claims: claims,
-        timestamp: Date.now()
-      })
-    });
-
-    await chrome.storage.local.set({
-      lastSync: Date.now()
-    });
-
-    console.log('[VetClaim Extension] Batch sync complete');
-
-  } catch (error) {
-    console.error('[VetClaim Extension] Sync error:', error);
-  }
-}
-
-// Start periodic sync on extension load
-setupPeriodicSync();
-
-console.log('[VetClaim Extension] Background service worker initialized');
+console.log('[VetClaim] Service worker initialized');
