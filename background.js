@@ -93,13 +93,29 @@ async function fetchAllVaData() {
   const ratingsJson = ratingsRes.status === 'fulfilled' ? ratingsRes.value : null;
   const appealsJson = appealsRes.status === 'fulfilled' ? appealsRes.value : null;
 
-  // ── Parse claims ──────────────────────────────────────────────────────
+  // ── Parse claims (list gives minimal data, so fetch each detail) ──────
   let parsedClaims = [];
   if (claimsJson?.data) {
     const items = Array.isArray(claimsJson.data) ? claimsJson.data : [claimsJson.data];
-    parsedClaims = items
-      .filter(d => d.type === 'claim' || d.type === 'evss_claims')
-      .map(parseBenefitClaim);
+    const claimIds = items.map(d => d.id).filter(Boolean);
+
+    // Fetch full details for each claim (the detail endpoint has phase, contentions, etc.)
+    const detailResults = await Promise.allSettled(
+      claimIds.map(id => fetchVaEndpoint(`${VA_ENDPOINTS.claims}/${id}`))
+    );
+
+    for (let i = 0; i < claimIds.length; i++) {
+      const detailRes = detailResults[i];
+      if (detailRes.status === 'fulfilled' && detailRes.value?.data) {
+        // Use the detailed response (has phase, contentions, tracked items)
+        parsedClaims.push(parseBenefitClaim(detailRes.value.data));
+      } else {
+        // Fall back to the minimal list data
+        parsedClaims.push(parseBenefitClaim(items[i]));
+      }
+    }
+
+    console.log(`[VetClaim] Fetched details for ${parsedClaims.length} claims`);
   }
 
   // ── Parse rated disabilities ──────────────────────────────────────────
@@ -139,12 +155,14 @@ async function fetchAllVaData() {
     }));
   }
 
-  // ── Persist locally ───────────────────────────────────────────────────
+  // ── Persist locally (including raw for debugging) ─────────────────────
   await chrome.storage.local.set({
     vaClaims:    parsedClaims,
     vaRatings:   parsedRatings,
     vaAppeals:   parsedAppeals,
-    vaLastFetch: Date.now()
+    vaLastFetch: Date.now(),
+    _rawClaims:  claimsJson,   // raw VA response for debugging
+    _rawRatings: ratingsJson
   });
 
   console.log(
@@ -174,36 +192,95 @@ async function fetchAllVaData() {
   }
 }
 
+// ─── Phase Type → Number Mapping ────────────────────────────────────────
+// VA.gov returns latestPhaseType as a human-readable string inside claimPhaseDates.
+const PHASE_MAP = {
+  'claim received':               1,
+  'under review':                 2,
+  'initial review':               2,
+  'gathering of evidence':        3,
+  'evidence gathering':           3,
+  'review of evidence':           4,
+  'preparation for decision':     5,
+  'pending decision approval':    6,
+  'preparation for notification': 7,
+  'complete':                     8,
+  'closed':                       8
+};
+
+function phaseFromString(str) {
+  if (!str) return null;
+  const key = str.toLowerCase().replace(/_/g, ' ').trim();
+  return PHASE_MAP[key] || null;
+}
+
 // ─── Claim Parser ───────────────────────────────────────────────────────
+// Handles both the list endpoint and detail endpoint response formats.
+// VA.gov API uses EVSS-style fields:
+//   - claimPhaseDates.latestPhaseType (nested, human-readable string)
+//   - contentionList (array of strings, not objects)
+//   - status/claimStatus ("PEND", "CAN", etc.)
+//   - decisionNotificationSent / developmentLetterSent ("Yes"/"No" strings)
+//   - attentionNeeded ("Yes"/"No")
+//   - statusType (claim type like "Compensation")
 function parseBenefitClaim(data) {
   const a = data.attributes || {};
+
+  // Phase info lives inside claimPhaseDates
+  const phaseDates = a.claimPhaseDates || {};
+  const latestPhaseType = phaseDates.latestPhaseType || a.latestPhaseType || a.phaseType || '';
+
+  // Phase number: prefer explicit, fall back to string mapping
+  const rawPhase = a.phase ?? a.currentPhase ?? null;
+  const phase = (typeof rawPhase === 'number' && rawPhase >= 1)
+    ? rawPhase
+    : phaseFromString(latestPhaseType);
+
+  // Status
+  const status = a.status || a.claimStatus || '';
+
+  // Claim type — VA uses statusType or claimType
+  const claimType = a.claimType || a.statusType || '';
+
+  // Contentions — VA returns contentionList as string array OR contentions as object array
+  let contentions = [];
+  if (a.contentionList && Array.isArray(a.contentionList)) {
+    contentions = a.contentionList.map(item => {
+      if (typeof item === 'string') return { name: item, code: '', classification: '', status: '' };
+      return { name: item.name || '', code: item.code || '', classification: item.classification || '', status: item.status || '' };
+    });
+  } else if (a.contentions && Array.isArray(a.contentions)) {
+    contentions = a.contentions.map(c => ({
+      name: c.name || '', code: c.code || '', classification: c.classification || '', status: c.status || ''
+    }));
+  }
+
+  // Boolean flags — VA uses "Yes"/"No" strings OR actual booleans
+  const toBool = (v) => v === true || v === 'Yes' || v === 'yes';
+
   return {
-    claimId:                data.id,
-    claimType:              a.claimType,
-    claimTypeCode:          a.claimTypeCode,
-    status:                 a.status,
-    phase:                  a.phase,
-    phaseChangeDate:        a.phaseChangeDate,
-    dateInitiated:          a.claimDate,
-    dateFiled:              a.dateFiled,
-    estimatedDecisionDate:  a.estimatedDecisionDate,
-    developmentLetterSent:  a.developmentLetterSent || false,
-    decisionLetterSent:     a.decisionLetterSent || false,
-    documentsNeeded:        a.documentsNeeded || false,
-    waiverSubmitted:        a.waiverSubmitted || false,
-    contentions: (a.contentions || []).map(c => ({
-      name:           c.name,
-      code:           c.code,
-      classification: c.classification,
-      status:         c.status
-    })),
-    supportingDocuments: a.supportingDocuments || [],
-    trackedItems:        a.trackedItems || [],
-    jurisdiction:        a.jurisdiction,
-    eventsTimeline:      a.eventsTimeline || [],
-    claimPhaseDates:     a.claimPhaseDates || {},
-    updatedAt:           a.updatedAt,
-    createdAt:           a.createdAt
+    claimId:                String(data.id),
+    claimType:              claimType,
+    claimTypeCode:          a.claimTypeCode || a.benefitClaimTypeCode || '',
+    status:                 status,
+    phase:                  phase,
+    latestPhaseType:        latestPhaseType,
+    phaseChangeDate:        phaseDates.phaseChangeDate || a.phaseChangeDate || null,
+    dateInitiated:          a.claimDate || a.date || a.dateFiled || null,
+    dateFiled:              a.dateFiled || a.date || null,
+    estimatedDecisionDate:  a.maxEstClaimDate || phaseDates.phaseMaxEstDate || a.estimatedDecisionDate || null,
+    developmentLetterSent:  toBool(a.developmentLetterSent),
+    decisionLetterSent:     toBool(a.decisionNotificationSent || a.decisionLetterSent),
+    documentsNeeded:        toBool(a.attentionNeeded) || toBool(a.documentsNeeded),
+    waiverSubmitted:        toBool(a.waiver5103Submitted || a.waiverSubmitted),
+    contentions:            contentions,
+    supportingDocuments:    a.supportingDocuments || a.vbaDocumentList || [],
+    trackedItems:           a.trackedItems || a.consolidatedTrackedItemsList || a.claimTrackedItems || [],
+    jurisdiction:           a.jurisdiction || a.tempJurisdiction || '',
+    eventsTimeline:         a.eventsTimeline || [],
+    claimPhaseDates:        phaseDates,
+    updatedAt:              a.updatedAt || null,
+    createdAt:              a.createdAt || null
   };
 }
 

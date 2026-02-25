@@ -225,31 +225,36 @@
           </div>
         </div>
 
-        ${claims.slice(0, 3).map(c => {
+        ${claims.slice(0, 4).map(c => {
           const pct = c.phase ? Math.round((c.phase / 8) * 100) : 0;
           const phaseLabels = {
             1:'Received',2:'Initial Review',3:'Evidence Gathering',
-            4:'Review',5:'Prep for Decision',6:'Pending Approval',
+            4:'Review of Evidence',5:'Prep for Decision',6:'Pending Approval',
             7:'Prep for Notification',8:'Complete'
           };
+          // Human-readable status from raw VA status string
+          const statusText = c.phase ? phaseLabels[c.phase]
+            : (c.status || c.latestPhaseType || '').replace(/_/g, ' ').toLowerCase()
+                .replace(/\b\w/g, l => l.toUpperCase()) || 'Pending';
           return `
             <div class="vc-claim">
               <div class="vc-claim-title">${c.claimType || 'Claim'} #${c.claimId}</div>
               <div class="vc-phase">
-                <span>${phaseLabels[c.phase] || 'Unknown'}</span>
-                <div class="vc-bar"><div class="vc-bar-fill" style="width:${pct}%"></div></div>
-                <span>${c.phase || '?'}/8</span>
+                <span>${statusText}</span>
+                ${c.phase ? `<div class="vc-bar"><div class="vc-bar-fill" style="width:${pct}%"></div></div><span>${c.phase}/8</span>` : ''}
               </div>
+              ${c.jurisdiction ? `<div style="font-size:10px;color:#94a3b8;margin-bottom:4px;">${c.jurisdiction}</div>` : ''}
               <div class="vc-tags">
                 ${(c.contentions || []).slice(0, 4).map(ct =>
                   `<span class="vc-tag">${ct.name}</span>`
                 ).join('')}
                 ${c.documentsNeeded ? '<span class="vc-tag warn">DOCS NEEDED</span>' : ''}
+                ${c.decisionLetterSent ? '<span class="vc-tag" style="background:#14532d;color:#86efac;">DECISION SENT</span>' : ''}
               </div>
             </div>
           `;
         }).join('')}
-        ${claims.length > 3 ? `<div style="text-align:center;color:#64748b;font-size:11px;margin-top:4px;">+ ${claims.length - 3} more claim(s)</div>` : ''}
+        ${claims.length > 4 ? `<div style="text-align:center;color:#64748b;font-size:11px;margin-top:4px;">+ ${claims.length - 4} more claim(s)</div>` : ''}
       </div>
 
       <div class="vc-footer">

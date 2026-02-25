@@ -70,6 +70,9 @@ document.addEventListener('DOMContentLoaded', async () => {
 
       list.innerHTML = claims.slice(0, 5).map(c => {
         const pct = c.phase ? Math.round((c.phase / 8) * 100) : 0;
+        const statusText = c.phase ? phaseLabels[c.phase]
+          : (c.status || c.latestPhaseType || '').replace(/_/g, ' ').toLowerCase()
+              .replace(/\b\w/g, l => l.toUpperCase()) || 'Pending';
         const tags = (c.contentions || []).slice(0, 3).map(ct =>
           `<span class="tag">${ct.name}</span>`
         ).join('');
@@ -79,10 +82,10 @@ document.addEventListener('DOMContentLoaded', async () => {
           <div class="claim-card">
             <div class="claim-title">${c.claimType || 'Claim'} #${c.claimId}</div>
             <div class="claim-phase">
-              <span>${phaseLabels[c.phase] || 'Unknown'}</span>
-              <div class="bar"><div class="bar-fill" style="width:${pct}%"></div></div>
-              <span>${c.phase || '?'}/8</span>
+              <span>${statusText}</span>
+              ${c.phase ? `<div class="bar"><div class="bar-fill" style="width:${pct}%"></div></div><span>${c.phase}/8</span>` : ''}
             </div>
+            ${c.jurisdiction ? `<div style="font-size:9px;color:#64748b;margin-top:2px;">${c.jurisdiction}</div>` : ''}
             <div class="tags">${tags}${docsTag}</div>
           </div>
         `;
