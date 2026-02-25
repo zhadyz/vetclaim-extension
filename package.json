@@ -1,0 +1,22 @@
+{
+  "name": "vetclaim-extension",
+  "version": "1.0.0",
+  "description": "VetClaim Services Chrome Extension — sync your live VA.gov claim data for AI-powered insights",
+  "main": "background.js",
+  "scripts": {
+    "build": "echo 'No build step — load as unpacked extension in Chrome'"
+  },
+  "keywords": [
+    "va",
+    "veterans",
+    "disability-claims",
+    "chrome-extension",
+    "vetclaim"
+  ],
+  "author": "VetClaim Services",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/zhadyz/vetclaim-extension"
+  }
+}

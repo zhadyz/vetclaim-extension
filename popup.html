@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      width: 320px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #0a1628;
+      color: #e2e8f0;
+      padding: 16px;
+    }
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 16px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid #1e3a5f;
+    }
+    .header h1 {
+      font-size: 14px;
+      font-weight: 600;
+      color: #f0c040;
+    }
+    .header span {
+      font-size: 11px;
+      color: #64748b;
+    }
+    .status {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 12px;
+      border-radius: 8px;
+      background: #111d2e;
+      margin-bottom: 12px;
+      font-size: 12px;
+    }
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .dot.connected { background: #22c55e; }
+    .dot.disconnected { background: #ef4444; }
+    .info {
+      font-size: 11px;
+      color: #94a3b8;
+      line-height: 1.5;
+    }
+    .info a {
+      color: #60a5fa;
+      text-decoration: none;
+    }
+    .info a:hover { text-decoration: underline; }
+    #claim-count {
+      font-weight: 600;
+      color: #f0c040;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div>
+      <h1>VetClaim Extension</h1>
+      <span>VA.gov Claim Sync</span>
+    </div>
+  </div>
+  <div class="status" id="status-box">
+    <span class="dot disconnected" id="status-dot"></span>
+    <span id="status-text">Checking connection...</span>
+  </div>
+  <div class="status">
+    <span>Claims synced:</span>
+    <span id="claim-count">0</span>
+  </div>
+  <p class="info">
+    Visit <a href="https://www.va.gov/claim-or-appeal-status" target="_blank">VA.gov Claim Status</a>
+    while logged in to sync your claims automatically.
+    <br><br>
+    Data syncs to your <a href="https://vetclaimservices.com/dashboard" target="_blank">VetClaim dashboard</a>.
+  </p>
+  <script src="popup.js"></script>
+</body>
+</html>

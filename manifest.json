@@ -1,0 +1,61 @@
+{
+  "manifest_version": 3,
+  "name": "VA Intelligence Copilot",
+  "version": "1.0.0",
+  "description": "AI-powered disability claims assistant with predictive analytics and automated document generation.",
+  "author": "Abdul (hollowed_eyes)",
+  
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": "icons/icon48.png"
+  },
+  
+  "permissions": [
+    "storage",
+    "activeTab",
+    "tabs",
+    "notifications",
+    "alarms"
+  ],
+  
+  "host_permissions": [
+    "https://www.va.gov/*",
+    "https://api.va.gov/*",
+    "https://vetclaimservices.com/*",
+    "https://api.vetclaimservices.com/*"
+  ],
+  
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  
+  "content_scripts": [
+    {
+      "js": ["content-script.js"],
+      "css": ["content-styles.css"],
+      "run_at": "document_start",
+      "matches": [
+        "*://www.va.gov/claim-or-appeal-status/*",
+        "*://www.va.gov/track-claims/*"
+      ]
+    }
+  ],
+  
+  "web_accessible_resources": [
+    {
+      "resources": ["interceptor.js"],
+      "matches": ["*://www.va.gov/*"]
+    }
+  ],
+  
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self';"
+  }
+}
