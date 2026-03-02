@@ -4,223 +4,448 @@
   <meta charset="UTF-8">
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
+
     body {
-      width: 340px;
+      width: 360px;
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
       background: #0a1628;
       color: #e2e8f0;
+      overflow-x: hidden;
     }
+
+    /* ── Header ─────────────────────────────────────────────────── */
     .header {
-      padding: 14px 16px 12px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 16px 18px 14px;
       border-bottom: 1px solid #1e3a5f;
-      background: #0f1d2f;
+      background: linear-gradient(180deg, #0f1d2f 0%, #0a1628 100%);
     }
-    .header h1 {
+    .header-logo {
+      width: 32px;
+      height: 32px;
+      border-radius: 8px;
+      object-fit: cover;
+      flex-shrink: 0;
+    }
+    .header-text { flex: 1; }
+    .header-text h1 {
       font-size: 15px;
       font-weight: 700;
       color: #f0c040;
+      line-height: 1.2;
     }
-    .header span {
-      font-size: 11px;
+    .header-text span {
+      font-size: 10px;
       color: #64748b;
+      letter-spacing: 0.3px;
     }
 
-    /* Status rows */
+    /* ── Status rows ────────────────────────────────────────────── */
+    .status-section {
+      padding: 2px 0;
+    }
     .status-row {
       display: flex;
       align-items: center;
-      gap: 8px;
-      padding: 10px 16px;
+      gap: 10px;
+      padding: 9px 18px;
       font-size: 12px;
-      border-bottom: 1px solid #111d2e;
+      border-bottom: 1px solid #0f1d2f;
+      transition: background 0.15s;
     }
+    .status-row:hover { background: #0f1d2f; }
     .dot {
       width: 8px; height: 8px;
       border-radius: 50%;
       flex-shrink: 0;
+      transition: background 0.3s, box-shadow 0.3s;
     }
-    .dot.green  { background: #22c55e; }
-    .dot.red    { background: #ef4444; }
-    .dot.yellow { background: #eab308; }
-    .status-label { color: #94a3b8; }
-    .status-value { margin-left: auto; font-weight: 600; }
+    .dot.green  { background: #22c55e; box-shadow: 0 0 6px rgba(34,197,94,0.4); }
+    .dot.red    { background: #ef4444; box-shadow: 0 0 6px rgba(239,68,68,0.3); }
+    .dot.yellow { background: #eab308; box-shadow: 0 0 6px rgba(234,179,8,0.3); }
+    .status-label { color: #94a3b8; flex: 1; }
+    .status-value { font-weight: 600; font-size: 11px; }
 
-    /* Stats grid */
+    /* ── Stats grid ─────────────────────────────────────────────── */
     .stats {
       display: grid;
       grid-template-columns: 1fr 1fr 1fr;
       gap: 8px;
-      padding: 12px 16px;
+      padding: 14px 18px;
     }
     .stat {
       background: #111d2e;
-      border-radius: 8px;
-      padding: 10px 8px;
+      border: 1px solid #1a2d44;
+      border-radius: 10px;
+      padding: 12px 8px 10px;
       text-align: center;
+      transition: border-color 0.2s, transform 0.15s;
+    }
+    .stat:hover {
+      border-color: #2d4a6f;
+      transform: translateY(-1px);
     }
     .stat-value {
-      font-size: 20px;
+      font-size: 22px;
       font-weight: 700;
       color: #f0c040;
+      line-height: 1;
     }
     .stat-label {
       font-size: 9px;
       color: #64748b;
       text-transform: uppercase;
-      margin-top: 2px;
+      letter-spacing: 0.5px;
+      margin-top: 4px;
     }
 
-    /* Claims list */
-    .claims-section {
-      padding: 0 16px 8px;
+    /* ── Section header ─────────────────────────────────────────── */
+    .section-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 18px;
+      margin-bottom: 8px;
     }
     .section-title {
       font-size: 10px;
       color: #64748b;
       text-transform: uppercase;
       letter-spacing: 0.5px;
-      margin-bottom: 6px;
+      font-weight: 600;
+    }
+    .section-count {
+      font-size: 9px;
+      color: #475569;
+      background: #111d2e;
+      padding: 1px 6px;
+      border-radius: 8px;
+    }
+
+    /* ── Claims list ────────────────────────────────────────────── */
+    .claims-section {
+      padding: 0 18px 10px;
     }
     .claim-card {
       background: #111d2e;
-      border-radius: 8px;
-      padding: 10px 12px;
+      border: 1px solid #1a2d44;
+      border-radius: 10px;
+      padding: 12px 14px;
+      margin-bottom: 8px;
+      transition: border-color 0.2s, background 0.2s;
+      cursor: default;
+    }
+    .claim-card:hover {
+      border-color: #2d4a6f;
+      background: #152236;
+    }
+    .claim-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
       margin-bottom: 6px;
     }
     .claim-title {
       font-size: 12px;
       font-weight: 600;
-      margin-bottom: 4px;
+      color: #e2e8f0;
+      line-height: 1.3;
+    }
+    .claim-id {
+      font-size: 10px;
+      color: #475569;
+      font-weight: 400;
+    }
+    .claim-est {
+      font-size: 9px;
+      color: #64748b;
+      text-align: right;
+      flex-shrink: 0;
+    }
+    .claim-est strong {
+      display: block;
+      color: #94a3b8;
+      font-size: 10px;
     }
     .claim-phase {
       display: flex;
       align-items: center;
-      gap: 6px;
+      gap: 8px;
       font-size: 10px;
       color: #94a3b8;
-      margin-bottom: 4px;
+      margin-bottom: 8px;
     }
     .bar {
       flex: 1;
-      height: 3px;
+      height: 4px;
       background: #1e3a5f;
       border-radius: 2px;
       overflow: hidden;
     }
     .bar-fill {
       height: 100%;
-      background: #f0c040;
       border-radius: 2px;
+      transition: width 0.5s ease;
     }
+    .bar-fill.gold { background: linear-gradient(90deg, #f0c040, #e0b030); }
+    .bar-fill.green { background: linear-gradient(90deg, #22c55e, #16a34a); }
+    .bar-fill.warn { background: linear-gradient(90deg, #eab308, #ca8a04); }
     .tags {
       display: flex;
       flex-wrap: wrap;
-      gap: 3px;
+      gap: 4px;
     }
     .tag {
       font-size: 9px;
-      padding: 1px 5px;
-      border-radius: 3px;
+      padding: 2px 7px;
+      border-radius: 4px;
       background: #1e3a5f;
       color: #94a3b8;
+      line-height: 1.4;
     }
     .tag.warn {
-      background: #7c2d12;
-      color: #fdba74;
+      background: rgba(234,179,8,0.15);
+      color: #fbbf24;
+      font-weight: 600;
+    }
+    .tag.success {
+      background: rgba(34,197,94,0.15);
+      color: #4ade80;
     }
 
-    /* Ratings */
+    /* ── Ratings ─────────────────────────────────────────────────── */
     .ratings-section {
-      padding: 0 16px 10px;
+      padding: 0 18px 10px;
     }
     .rating-row {
       display: flex;
       justify-content: space-between;
       align-items: center;
       font-size: 11px;
-      padding: 4px 0;
-      border-bottom: 1px solid #111d2e;
+      padding: 5px 0;
+      border-bottom: 1px solid #0f1d2f;
     }
     .rating-row:last-child { border: none; }
-    .rating-name { color: #cbd5e1; }
+    .rating-name {
+      color: #cbd5e1;
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      padding-right: 8px;
+    }
     .rating-pct {
-      font-weight: 600;
+      font-weight: 700;
       color: #f0c040;
+      flex-shrink: 0;
+    }
+    .rating-static {
+      font-size: 8px;
+      color: #475569;
+      margin-left: 4px;
+      text-transform: uppercase;
     }
 
-    /* Actions */
+    /* ── Actions ─────────────────────────────────────────────────── */
     .actions {
-      padding: 10px 16px 14px;
+      padding: 12px 18px 14px;
       display: flex;
       gap: 8px;
     }
     .btn {
       flex: 1;
-      padding: 8px 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      padding: 9px 0;
       border: none;
-      border-radius: 6px;
-      font-size: 11px;
+      border-radius: 8px;
+      font-size: 12px;
       font-weight: 600;
       cursor: pointer;
       text-align: center;
       text-decoration: none;
+      transition: background 0.15s, transform 0.1s, opacity 0.15s;
     }
+    .btn:active { transform: scale(0.97); }
     .btn-primary {
-      background: #f0c040;
+      background: linear-gradient(135deg, #f0c040 0%, #d4a020 100%);
       color: #0a1628;
     }
-    .btn-primary:hover { background: #e0b030; }
+    .btn-primary:hover { background: linear-gradient(135deg, #fcd34d 0%, #e0b030 100%); }
     .btn-primary:disabled {
       opacity: 0.5;
       cursor: not-allowed;
+      transform: none;
     }
     .btn-secondary {
       background: #1e3a5f;
       color: #e2e8f0;
+      border: 1px solid #2d4a6f;
     }
     .btn-secondary:hover { background: #264a6f; }
 
+    /* Spinner */
+    .spinner {
+      display: inline-block;
+      width: 12px;
+      height: 12px;
+      border: 2px solid #0a1628;
+      border-top-color: transparent;
+      border-radius: 50%;
+      animation: spin 0.6s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Sync info row ──────────────────────────────────────────── */
+    .sync-info {
+      padding: 6px 18px 8px;
+      font-size: 10px;
+      color: #475569;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .sync-info svg {
+      flex-shrink: 0;
+      opacity: 0.6;
+    }
+
+    /* ── Footer ─────────────────────────────────────────────────── */
     .footer {
-      padding: 8px 16px 12px;
+      padding: 10px 18px 14px;
       border-top: 1px solid #1e3a5f;
       font-size: 10px;
       color: #475569;
       text-align: center;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
     }
     .footer a { color: #60a5fa; text-decoration: none; }
     .footer a:hover { text-decoration: underline; }
+    .footer .sep { color: #1e3a5f; }
 
+    /* ── Empty state ────────────────────────────────────────────── */
     .empty {
-      padding: 16px;
+      padding: 24px 18px;
       text-align: center;
       color: #64748b;
       font-size: 12px;
+      line-height: 1.6;
     }
+    .empty-icon {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 48px;
+      height: 48px;
+      border-radius: 12px;
+      background: #111d2e;
+      border: 1px solid #1e3a5f;
+      margin: 0 auto 12px;
+    }
+    .empty a { color: #60a5fa; font-weight: 500; }
+
+    /* Fade-in animation */
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(4px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    .fade-in {
+      animation: fadeIn 0.25s ease both;
+    }
+    .fade-in-1 { animation-delay: 0.05s; }
+    .fade-in-2 { animation-delay: 0.1s; }
+    .fade-in-3 { animation-delay: 0.15s; }
+    .fade-in-4 { animation-delay: 0.2s; }
+    .fade-in-5 { animation-delay: 0.25s; }
+
+    /* ── Alerts / warnings ───────────────────────────────────────── */
+    .alerts-section {
+      padding: 0 18px 10px;
+    }
+    .alert-card {
+      background: rgba(239,68,68,0.08);
+      border: 1px solid rgba(239,68,68,0.25);
+      border-radius: 8px;
+      padding: 10px 12px;
+      margin-bottom: 6px;
+      font-size: 11px;
+      line-height: 1.4;
+    }
+    .alert-card.warning {
+      background: rgba(234,179,8,0.08);
+      border-color: rgba(234,179,8,0.25);
+    }
+    .alert-card.info {
+      background: rgba(59,130,246,0.08);
+      border-color: rgba(59,130,246,0.25);
+    }
+    .alert-title {
+      font-weight: 600;
+      color: #fbbf24;
+      margin-bottom: 2px;
+      font-size: 11px;
+    }
+    .alert-card:not(.warning):not(.info) .alert-title { color: #f87171; }
+    .alert-card.info .alert-title { color: #60a5fa; }
+    .alert-message { color: #94a3b8; }
+
+    /* ── Payments summary ─────────────────────────────────────────── */
+    .payments-section,
+    .service-section,
+    .debts-section {
+      padding: 0 18px 10px;
+    }
+    .info-row {
+      display: flex;
+      justify-content: space-between;
+      font-size: 11px;
+      padding: 4px 0;
+      color: #94a3b8;
+    }
+    .info-row-value {
+      font-weight: 600;
+      color: #e2e8f0;
+    }
+    .info-row-value.gold { color: #f0c040; }
+    .info-row-value.danger { color: #f87171; }
   </style>
 </head>
 <body>
 
-  <div class="header">
-    <h1>VetClaim</h1>
-    <span>VA.gov Claim Sync</span>
+  <!-- Header -->
+  <div class="header fade-in">
+    <img class="header-logo" src="icons/logo-small.png" alt="" />
+    <div class="header-text">
+      <h1>VetClaim</h1>
+      <span>VA Claim Sync</span>
+    </div>
   </div>
 
   <!-- Connection status -->
-  <div class="status-row">
-    <span class="dot" id="vc-dot"></span>
-    <span class="status-label">VetClaim</span>
-    <span class="status-value" id="vc-status">…</span>
-  </div>
-  <div class="status-row">
-    <span class="dot" id="va-dot"></span>
-    <span class="status-label">VA.gov</span>
-    <span class="status-value" id="va-status">…</span>
+  <div class="status-section fade-in fade-in-1">
+    <div class="status-row">
+      <span class="dot" id="vc-dot"></span>
+      <span class="status-label">VetClaim Account</span>
+      <span class="status-value" id="vc-status">...</span>
+    </div>
+    <div class="status-row">
+      <span class="dot" id="va-dot"></span>
+      <span class="status-label">VA.gov Session</span>
+      <span class="status-value" id="va-status">...</span>
+    </div>
   </div>
 
   <!-- Stats -->
-  <div class="stats" id="stats-grid">
+  <div class="stats fade-in fade-in-2" id="stats-grid">
     <div class="stat">
-      <div class="stat-value" id="stat-rating">—</div>
+      <div class="stat-value" id="stat-rating">&mdash;</div>
       <div class="stat-label">Rating</div>
     </div>
     <div class="stat">
@@ -234,32 +459,98 @@
   </div>
 
   <!-- Claims -->
-  <div class="claims-section" id="claims-section" style="display:none">
-    <div class="section-title">Active Claims</div>
+  <div class="claims-section fade-in fade-in-3" id="claims-section" style="display:none">
+    <div class="section-header">
+      <div class="section-title">Active Claims</div>
+      <span class="section-count" id="claims-count"></span>
+    </div>
     <div id="claims-list"></div>
   </div>
 
   <!-- Ratings -->
-  <div class="ratings-section" id="ratings-section" style="display:none">
-    <div class="section-title">Service-Connected Disabilities</div>
+  <div class="ratings-section fade-in fade-in-3" id="ratings-section" style="display:none">
+    <div class="section-header">
+      <div class="section-title">Service-Connected Disabilities</div>
+    </div>
     <div id="ratings-list"></div>
   </div>
 
+  <!-- Alerts / Notifications -->
+  <div class="alerts-section fade-in fade-in-3" id="alerts-section" style="display:none">
+    <div class="section-header">
+      <div class="section-title">Alerts</div>
+      <span class="section-count" id="alerts-count"></span>
+    </div>
+    <div id="alerts-list"></div>
+  </div>
+
+  <!-- Payments Summary -->
+  <div class="payments-section fade-in fade-in-4" id="payments-section" style="display:none">
+    <div class="section-header">
+      <div class="section-title">Recent Payments</div>
+    </div>
+    <div id="payments-list"></div>
+  </div>
+
+  <!-- Service History Summary -->
+  <div class="service-section fade-in fade-in-4" id="service-section" style="display:none">
+    <div class="section-header">
+      <div class="section-title">Service History</div>
+    </div>
+    <div id="service-list"></div>
+  </div>
+
+  <!-- Debts Summary -->
+  <div class="debts-section fade-in fade-in-5" id="debts-section" style="display:none">
+    <div class="section-header">
+      <div class="section-title">Outstanding Debts</div>
+    </div>
+    <div id="debts-list"></div>
+  </div>
+
   <!-- No data state -->
-  <div class="empty" id="empty-state" style="display:none">
+  <div class="empty fade-in" id="empty-state" style="display:none">
+    <div class="empty-icon">
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#64748b" stroke-width="1.5" stroke-linecap="round">
+        <path d="M12 2L3 7v10l9 5 9-5V7l-9-5z"/>
+        <path d="M12 22V12"/>
+        <path d="M3 7l9 5 9-5"/>
+      </svg>
+    </div>
     Visit <a href="https://www.va.gov/claim-or-appeal-status" target="_blank">VA.gov Claim Status</a>
-    while logged in to pull your data.
+    while logged in to sync your data.
+  </div>
+
+  <!-- Sync info -->
+  <div class="sync-info fade-in fade-in-4" id="sync-info" style="display:none">
+    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+      <circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>
+    </svg>
+    <span id="sync-time"></span>
   </div>
 
   <!-- Actions -->
-  <div class="actions">
-    <button class="btn btn-primary" id="sync-btn">Sync Now</button>
-    <a class="btn btn-secondary" href="https://vetclaimservices.com/dashboard" target="_blank">Dashboard</a>
+  <div class="actions fade-in fade-in-4">
+    <button class="btn btn-primary" id="sync-btn">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" id="sync-icon">
+        <path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/>
+        <path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/>
+      </svg>
+      <span id="sync-label">Sync Now</span>
+    </button>
+    <a class="btn btn-secondary" href="https://vetclaimservices.com/dashboard" target="_blank">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+        <rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/>
+        <rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>
+      </svg>
+      Dashboard
+    </a>
   </div>
 
-  <div class="footer">
-    Data syncs to <a href="https://vetclaimservices.com" target="_blank">vetclaimservices.com</a>
-    &middot; <a href="https://github.com/zhadyz/vetclaim-extension" target="_blank">GitHub</a>
+  <div class="footer fade-in fade-in-4">
+    <a href="https://vetclaimservices.com" target="_blank">vetclaimservices.com</a>
+    <span class="sep">&middot;</span>
+    <span id="ext-version"></span>
   </div>
 
   <script src="popup.js"></script>

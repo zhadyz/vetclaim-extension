@@ -1,7 +1,7 @@
 /**
  * VetClaim Background Service Worker
  * Uses webRequest to detect VA.gov activity, then directly fetches
- * VA.gov API endpoints (claims, ratings, appeals) and syncs to VetClaim.
+ * VA.gov API endpoints and syncs ALL data to VetClaim via unified endpoint.
  */
 
 // ─── Config ─────────────────────────────────────────────────────────────
@@ -16,7 +16,15 @@ const CONFIG = {
 const VA_ENDPOINTS = {
   claims:             '/v0/benefits_claims',
   ratedDisabilities:  '/v0/rated_disabilities',
-  appeals:            '/v0/appeals'
+  appeals:            '/v0/appeals',
+  payments:           '/v0/profile/payment_history',
+  serviceHistory:     '/v0/profile/service_history',
+  intentToFile:       '/v0/intent_to_file',
+  benefitLetters:     '/v0/letters/beneficiary',
+  debts:              '/v0/debts',
+  copays:             '/v0/medical_copays',
+  dependents:         '/v0/dependents',
+  documents:          '/v0/efolder'
 };
 
 let lastVaFetch = 0;
@@ -32,17 +40,22 @@ chrome.runtime.onInstalled.addListener((details) => {
       vaClaims: [],
       vaRatings: null,
       vaAppeals: [],
+      vaPayments: [],
+      vaServiceHistory: null,
+      vaIntentToFile: null,
+      vaBenefitLetters: null,
+      vaDebts: null,
+      vaDependents: null,
+      vaDocuments: null,
       vaLoggedIn: false,
-      lastSync: null
+      lastSync: null,
+      pendingAlerts: []
     });
-    // Open VetClaim login so user can link their account
     chrome.tabs.create({ url: `${CONFIG.webAppUrl}/login?extension=true` });
   }
 });
 
 // ─── Detect VA.gov API activity via webRequest ──────────────────────────
-// When the user is on VA.gov and the page loads claim data, we detect it
-// and trigger a direct pull of ALL VA endpoints.
 chrome.webRequest.onCompleted.addListener(
   (details) => {
     if (details.statusCode < 200 || details.statusCode >= 300) return;
@@ -56,8 +69,6 @@ chrome.webRequest.onCompleted.addListener(
 );
 
 // ─── Direct VA.gov Fetch ────────────────────────────────────────────────
-// Because we have host_permissions for api.va.gov, Chrome includes the
-// user's session cookies automatically with credentials: 'include'.
 async function fetchVaEndpoint(path) {
   try {
     const res = await fetch(`${CONFIG.vaApiBase}${path}`, {
@@ -83,15 +94,36 @@ async function fetchVaEndpoint(path) {
 async function fetchAllVaData() {
   console.log('[VetClaim] Fetching VA.gov endpoints…');
 
-  const [claimsRes, ratingsRes, appealsRes] = await Promise.allSettled([
+  // Fetch all endpoints in parallel
+  const [
+    claimsRes, ratingsRes, appealsRes, paymentsRes,
+    serviceHistoryRes, itfRes, lettersRes, debtsRes, copaysRes, dependentsRes, documentsRes
+  ] = await Promise.allSettled([
     fetchVaEndpoint(VA_ENDPOINTS.claims),
     fetchVaEndpoint(VA_ENDPOINTS.ratedDisabilities),
-    fetchVaEndpoint(VA_ENDPOINTS.appeals)
+    fetchVaEndpoint(VA_ENDPOINTS.appeals),
+    fetchVaEndpoint(VA_ENDPOINTS.payments),
+    fetchVaEndpoint(VA_ENDPOINTS.serviceHistory),
+    fetchVaEndpoint(VA_ENDPOINTS.intentToFile),
+    fetchVaEndpoint(VA_ENDPOINTS.benefitLetters),
+    fetchVaEndpoint(VA_ENDPOINTS.debts),
+    fetchVaEndpoint(VA_ENDPOINTS.copays),
+    fetchVaEndpoint(VA_ENDPOINTS.dependents),
+    fetchVaEndpoint(VA_ENDPOINTS.documents)
   ]);
 
-  const claimsJson  = claimsRes.status  === 'fulfilled' ? claimsRes.value  : null;
-  const ratingsJson = ratingsRes.status === 'fulfilled' ? ratingsRes.value : null;
-  const appealsJson = appealsRes.status === 'fulfilled' ? appealsRes.value : null;
+  const settled = (r) => r.status === 'fulfilled' ? r.value : null;
+  const claimsJson   = settled(claimsRes);
+  const ratingsJson  = settled(ratingsRes);
+  const appealsJson  = settled(appealsRes);
+  const paymentsJson = settled(paymentsRes);
+  const serviceHistoryJson = settled(serviceHistoryRes);
+  const itfJson      = settled(itfRes);
+  const lettersJson  = settled(lettersRes);
+  const debtsJson    = settled(debtsRes);
+  const copaysJson   = settled(copaysRes);
+  const dependentsJson = settled(dependentsRes);
+  const documentsJson = settled(documentsRes);
 
   // ── Parse claims (list gives minimal data, so fetch each detail) ──────
   let parsedClaims = [];
@@ -99,7 +131,6 @@ async function fetchAllVaData() {
     const items = Array.isArray(claimsJson.data) ? claimsJson.data : [claimsJson.data];
     const claimIds = items.map(d => d.id).filter(Boolean);
 
-    // Fetch full details for each claim (the detail endpoint has phase, contentions, etc.)
     const detailResults = await Promise.allSettled(
       claimIds.map(id => fetchVaEndpoint(`${VA_ENDPOINTS.claims}/${id}`))
     );
@@ -107,14 +138,11 @@ async function fetchAllVaData() {
     for (let i = 0; i < claimIds.length; i++) {
       const detailRes = detailResults[i];
       if (detailRes.status === 'fulfilled' && detailRes.value?.data) {
-        // Use the detailed response (has phase, contentions, tracked items)
         parsedClaims.push(parseBenefitClaim(detailRes.value.data));
       } else {
-        // Fall back to the minimal list data
         parsedClaims.push(parseBenefitClaim(items[i]));
       }
     }
-
     console.log(`[VetClaim] Fetched details for ${parsedClaims.length} claims`);
   }
 
@@ -123,14 +151,23 @@ async function fetchAllVaData() {
   if (ratingsJson?.data?.attributes) {
     const attrs = ratingsJson.data.attributes;
     const indiv = attrs.individual_ratings || attrs.individualRatings || [];
+
+    if (indiv.length > 0) {
+      console.log('[VetClaim] Raw VA rating fields:', Object.keys(indiv[0]));
+    }
+
     parsedRatings = {
       combinedRating: attrs.combined_disability_rating ?? attrs.combinedDisabilityRating ?? null,
       individualRatings: indiv.map(r => ({
-        name:           r.name || r.diagnostic_text || r.diagnosticText || '',
-        rating:         r.rating_percentage ?? r.ratingPercentage ?? null,
-        diagnosticCode: r.diagnostic_type_code || r.diagnosticCode || '',
-        effectiveDate:  r.effective_date || r.effectiveDate || '',
-        static:         r.static_ind ?? r.staticInd ?? false
+        ...r,
+        name:               r.name || r.diagnostic_text || r.diagnosticText || '',
+        nameFull:           r.diagnostic_type_name || r.diagnosticTypeName || '',
+        rating:             r.rating_percentage ?? r.ratingPercentage ?? r.rating ?? null,
+        diagnosticCode:     r.diagnostic_type_code || r.diagnosticCode || '',
+        effectiveDate:      r.effective_date || r.effectiveDate || '',
+        decision:           r.decision || r.rating_decision || '',
+        static:             r.static_ind ?? r.staticInd ?? false,
+        ratingEndDate:      r.rating_end_date || r.ratingEndDate || null
       }))
     };
   }
@@ -155,45 +192,197 @@ async function fetchAllVaData() {
     }));
   }
 
-  // ── Persist locally (including raw for debugging) ─────────────────────
+  // ── Parse payments ───────────────────────────────────────────────────
+  let parsedPayments = [];
+  let paymentsData = paymentsJson;
+  if (!paymentsData?.data) {
+    const fallbacks = ['/v0/payments', '/v0/payment_history', '/v0/ppiu/payment_information'];
+    for (const path of fallbacks) {
+      if (path === VA_ENDPOINTS.payments) continue;
+      const fb = await fetchVaEndpoint(path);
+      if (fb?.data) { paymentsData = fb; break; }
+    }
+  }
+  if (paymentsData?.data?.attributes?.payments) {
+    const raw = paymentsData.data.attributes.payments;
+    parsedPayments = raw.map(p => ({
+      ...p,
+      date:      p.payment_date || p.paymentDate || p.date || null,
+      amount:    p.payment_amount || p.paymentAmount || p.amount || null,
+      type:      p.payment_type || p.paymentType || p.type || '',
+      method:    p.payment_method || p.paymentMethod || '',
+      bank:      p.bank_name || p.bankName || '',
+      account:   p.account_number ? `****${p.account_number.slice(-4)}` : ''
+    }));
+  } else if (paymentsData?.data && Array.isArray(paymentsData.data)) {
+    parsedPayments = paymentsData.data.map(p => {
+      const a = p.attributes || p;
+      return {
+        ...a,
+        date:   a.payment_date || a.paymentDate || a.date || null,
+        amount: a.payment_amount || a.paymentAmount || a.amount || null,
+        type:   a.payment_type || a.paymentType || a.type || '',
+        method: a.payment_method || a.paymentMethod || '',
+      };
+    });
+  }
+
+  // ── Parse service history ─────────────────────────────────────────────
+  let parsedServiceHistory = null;
+  if (serviceHistoryJson?.data?.attributes) {
+    const attrs = serviceHistoryJson.data.attributes;
+    const periods = attrs.service_episodes || attrs.serviceEpisodes || attrs.service_history || [];
+    parsedServiceHistory = {
+      periods: periods.map(p => ({
+        branch:       p.branch_of_service || p.branchOfService || '',
+        component:    p.personnel_category_type_code || p.personnelCategoryTypeCode || '',
+        startDate:    p.begin_date || p.beginDate || p.start_date || p.startDate || '',
+        endDate:      p.end_date || p.endDate || '',
+        dutyType:     p.personnel_category_type_code || '',
+        campaign:     p.deployments?.[0]?.location || '',
+        description:  p.character_of_discharge_code || p.characterOfDischargeCode || ''
+      }))
+    };
+  }
+
+  // ── Parse intent to file ──────────────────────────────────────────────
+  let parsedIntentToFile = null;
+  if (itfJson?.data) {
+    const items = Array.isArray(itfJson.data) ? itfJson.data : [itfJson.data];
+    parsedIntentToFile = {
+      intents: items.map(i => {
+        const attrs = i.attributes || i;
+        return {
+          type:           attrs.type || i.type || '',
+          status:         attrs.status || '',
+          expirationDate: attrs.expiration_date || attrs.expirationDate || '',
+          creationDate:   attrs.creation_date || attrs.creationDate || ''
+        };
+      })
+    };
+  }
+
+  // ── Parse benefit letters ─────────────────────────────────────────────
+  let parsedBenefitLetters = null;
+  if (lettersJson?.data) {
+    const attrs = lettersJson.data.attributes || lettersJson.data;
+    parsedBenefitLetters = {
+      letters: (attrs.letters || []).map(l => ({
+        name:       l.name || l.letterName || '',
+        letterType: l.letter_type || l.letterType || ''
+      })),
+      benefitInfo: attrs.benefit_information || attrs.benefitInformation || {}
+    };
+  }
+
+  // ── Parse debts ───────────────────────────────────────────────────────
+  let parsedDebts = null;
+  const debtItems = debtsJson?.debts || debtsJson?.data || [];
+  const copayItems = copaysJson?.data || [];
+  if (debtItems.length > 0 || copayItems.length > 0) {
+    parsedDebts = {
+      debts: (Array.isArray(debtItems) ? debtItems : []).map(d => ({
+        ...d,
+        type:   d.deduction_code || d.deductionCode || d.type || '',
+        amount: d.current_ar || d.currentAr || d.original_ar || d.originalAr || d.amount || 0,
+        status: d.debt_history?.[0]?.status || d.status || ''
+      })),
+      copays: (Array.isArray(copayItems) ? copayItems : []).map(c => ({
+        ...c,
+        station:     c.facility_name || c.facilityName || '',
+        amount:      c.pH_AMT_DUE || c.pHAmtDue || c.amount || 0,
+        billingDate: c.pH_DTE_BILL || c.pHDteBill || ''
+      }))
+    };
+  }
+
+  // ── Parse dependents ──────────────────────────────────────────────────
+  let parsedDependents = null;
+  if (dependentsJson?.data) {
+    const items = Array.isArray(dependentsJson.data) ? dependentsJson.data : [dependentsJson.data];
+    parsedDependents = {
+      dependents: items.map(d => {
+        const attrs = d.attributes || d;
+        return {
+          firstName:    attrs.first_name || attrs.firstName || '',
+          lastName:     attrs.last_name || attrs.lastName || '',
+          relationship: attrs.relationship || attrs.related_to || '',
+          dateOfBirth:  attrs.date_of_birth || attrs.dateOfBirth || ''
+        };
+      })
+    };
+  }
+
+  // ── Parse documents ───────────────────────────────────────────────────
+  let parsedDocuments = null;
+  if (documentsJson?.data) {
+    const items = Array.isArray(documentsJson.data) ? documentsJson.data : [];
+    parsedDocuments = {
+      documents: items.map(d => ({
+        documentId:      d.document_id || d.documentId || d.id || '',
+        typeDescription: d.type_description || d.typeDescription || '',
+        receivedAt:      d.received_at || d.receivedAt || d.upload_date || ''
+      })),
+      totalCount: items.length
+    };
+  }
+
+  // ── Persist locally ───────────────────────────────────────────────────
   await chrome.storage.local.set({
-    vaClaims:    parsedClaims,
-    vaRatings:   parsedRatings,
-    vaAppeals:   parsedAppeals,
-    vaLastFetch: Date.now(),
-    _rawClaims:  claimsJson,   // raw VA response for debugging
-    _rawRatings: ratingsJson
+    vaClaims:          parsedClaims,
+    vaRatings:         parsedRatings,
+    vaAppeals:         parsedAppeals,
+    vaPayments:        parsedPayments,
+    vaServiceHistory:  parsedServiceHistory,
+    vaIntentToFile:    parsedIntentToFile,
+    vaBenefitLetters:  parsedBenefitLetters,
+    vaDebts:           parsedDebts,
+    vaDependents:      parsedDependents,
+    vaDocuments:       parsedDocuments,
+    vaLastFetch:       Date.now(),
+    _rawClaims:        claimsJson,
+    _rawRatings:       ratingsJson,
+    _rawPayments:      paymentsJson
   });
 
   console.log(
-    `[VetClaim] Fetched ${parsedClaims.length} claims, ` +
+    `[VetClaim] Fetched: ${parsedClaims.length} claims, ` +
     `${parsedRatings ? parsedRatings.individualRatings.length : 0} ratings, ` +
-    `${parsedAppeals.length} appeals`
+    `${parsedAppeals.length} appeals, ${parsedPayments.length} payments, ` +
+    `SH:${parsedServiceHistory ? 'yes' : 'no'}, ITF:${parsedIntentToFile ? 'yes' : 'no'}, ` +
+    `Letters:${parsedBenefitLetters ? 'yes' : 'no'}, Debts:${parsedDebts ? 'yes' : 'no'}`
   );
 
-  // ── Sync to VetClaim API ──────────────────────────────────────────────
+  // ── Unified sync to VetClaim API ──────────────────────────────────────
   const auth = await checkAuthStatus();
-  if (auth.authenticated && parsedClaims.length > 0) {
-    await syncClaimsToVetClaim(parsedClaims, claimsJson, auth.accessToken);
+  if (auth.authenticated) {
+    await syncAllToVetClaim(auth.accessToken);
   }
 
-  // ── Notify any open VA.gov tabs (for overlay) ─────────────────────────
+  // ── Notify VA.gov tabs ────────────────────────────────────────────────
   const vaTabs = await chrome.tabs.query({ url: '*://www.va.gov/*' });
   for (const tab of vaTabs) {
     chrome.tabs.sendMessage(tab.id, {
       type: 'VA_DATA_READY',
       claims: parsedClaims,
-      ratings: parsedRatings
+      ratings: parsedRatings,
+      appeals: parsedAppeals,
+      serviceHistory: parsedServiceHistory,
+      intentToFile: parsedIntentToFile,
+      benefitLetters: parsedBenefitLetters,
+      debts: parsedDebts
     }).catch(() => {});
   }
 
   if (parsedClaims.length > 0) {
     sendNotification('Claims Synced', `${parsedClaims.length} claim(s) pulled from VA.gov`);
   }
+
+  // Update badge
+  updateBadge();
 }
 
 // ─── Phase Type → Number Mapping ────────────────────────────────────────
-// VA.gov returns latestPhaseType as a human-readable string inside claimPhaseDates.
 const PHASE_MAP = {
   'claim received':               1,
   'under review':                 2,
@@ -215,34 +404,17 @@ function phaseFromString(str) {
 }
 
 // ─── Claim Parser ───────────────────────────────────────────────────────
-// Handles both the list endpoint and detail endpoint response formats.
-// VA.gov API uses EVSS-style fields:
-//   - claimPhaseDates.latestPhaseType (nested, human-readable string)
-//   - contentionList (array of strings, not objects)
-//   - status/claimStatus ("PEND", "CAN", etc.)
-//   - decisionNotificationSent / developmentLetterSent ("Yes"/"No" strings)
-//   - attentionNeeded ("Yes"/"No")
-//   - statusType (claim type like "Compensation")
 function parseBenefitClaim(data) {
   const a = data.attributes || {};
-
-  // Phase info lives inside claimPhaseDates
   const phaseDates = a.claimPhaseDates || {};
   const latestPhaseType = phaseDates.latestPhaseType || a.latestPhaseType || a.phaseType || '';
-
-  // Phase number: prefer explicit, fall back to string mapping
   const rawPhase = a.phase ?? a.currentPhase ?? null;
   const phase = (typeof rawPhase === 'number' && rawPhase >= 1)
     ? rawPhase
     : phaseFromString(latestPhaseType);
-
-  // Status
   const status = a.status || a.claimStatus || '';
-
-  // Claim type — VA uses statusType or claimType
   const claimType = a.claimType || a.statusType || '';
 
-  // Contentions — VA returns contentionList as string array OR contentions as object array
   let contentions = [];
   if (a.contentionList && Array.isArray(a.contentionList)) {
     contentions = a.contentionList.map(item => {
@@ -255,7 +427,6 @@ function parseBenefitClaim(data) {
     }));
   }
 
-  // Boolean flags — VA uses "Yes"/"No" strings OR actual booleans
   const toBool = (v) => v === true || v === 'Yes' || v === 'yes';
 
   return {
@@ -284,57 +455,235 @@ function parseBenefitClaim(data) {
   };
 }
 
-// ─── VetClaim API Sync ──────────────────────────────────────────────────
-async function syncClaimsToVetClaim(claims, rawJson, accessToken) {
+// ─── Unified VetClaim API Sync ──────────────────────────────────────────
+// Posts ALL data types in a single request to /va-sync/full.
+// Falls back to individual endpoints if unified fails.
+async function syncAllToVetClaim(accessToken) {
+  const data = await chrome.storage.local.get([
+    'vaClaims', 'vaRatings', 'vaAppeals', 'vaPayments',
+    'vaServiceHistory', 'vaIntentToFile', 'vaBenefitLetters',
+    'vaDebts', 'vaDependents', 'vaDocuments', '_rawClaims'
+  ]);
+
+  const payload = { timestamp: Date.now() };
+
+  if (data.vaClaims?.length > 0) {
+    payload.claims = data.vaClaims.map((c, i) => ({
+      structured: c,
+      raw: data._rawClaims?.data?.[i] ?? null,
+      lastUpdated: Date.now()
+    }));
+  }
+  if (data.vaRatings) {
+    payload.ratings = data.vaRatings;
+  }
+  if (data.vaAppeals?.length > 0) {
+    payload.appeals = data.vaAppeals;
+  }
+  if (data.vaPayments?.length > 0) {
+    payload.payments = data.vaPayments;
+  }
+  if (data.vaServiceHistory) {
+    payload.serviceHistory = data.vaServiceHistory;
+  }
+  if (data.vaIntentToFile) {
+    payload.intentToFile = data.vaIntentToFile;
+  }
+  if (data.vaBenefitLetters) {
+    payload.benefitLetters = data.vaBenefitLetters;
+  }
+  if (data.vaDebts) {
+    payload.debts = data.vaDebts;
+  }
+  if (data.vaDependents) {
+    payload.dependents = data.vaDependents;
+  }
+  if (data.vaDocuments) {
+    payload.documents = data.vaDocuments;
+  }
+
   try {
-    let res;
+    const res = await fetch(`${CONFIG.apiBaseUrl}/va-sync/full`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${accessToken}`,
+        'X-Extension-Version': chrome.runtime.getManifest().version
+      },
+      body: JSON.stringify(payload)
+    });
 
-    if (claims.length === 1) {
-      res = await fetch(`${CONFIG.apiBaseUrl}/va-sync`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${accessToken}`,
-          'X-Extension-Version': chrome.runtime.getManifest().version
-        },
-        body: JSON.stringify({
-          claimData: claims[0],
-          rawData: rawJson?.data ?? null,
-          dataType: 'benefit_claim',
-          timestamp: Date.now()
-        })
-      });
-    } else {
-      res = await fetch(`${CONFIG.apiBaseUrl}/va-sync/batch`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${accessToken}`,
-          'X-Extension-Version': chrome.runtime.getManifest().version
-        },
-        body: JSON.stringify({
-          claims: claims.map((c, i) => ({
-            structured: c,
-            raw: rawJson?.data?.[i] ?? null,
-            lastUpdated: Date.now()
-          })),
-          timestamp: Date.now()
-        })
-      });
-    }
-
-    if (res && res.status === 401) {
+    if (res.status === 401) {
       const refreshed = await refreshAuthToken();
-      if (refreshed) {
-        return syncClaimsToVetClaim(claims, rawJson, refreshed.accessToken);
-      }
+      if (refreshed) return syncAllToVetClaim(refreshed.accessToken);
       return;
     }
 
-    await chrome.storage.local.set({ lastSync: Date.now() });
-    console.log('[VetClaim] Sync complete');
+    if (res.ok) {
+      const result = await res.json();
+      const changes = result?.data?.changes;
+      const notifications = result?.data?.notifications || [];
+
+      await chrome.storage.local.set({
+        lastSync: Date.now(),
+        lastSyncChanges: changes,
+        pendingAlerts: notifications
+      });
+
+      // Show Chrome notifications for significant changes
+      if (notifications.length > 0) {
+        const urgent = notifications.filter(n =>
+          n.type === 'DEADLINE_REMINDER' || n.type === 'RATING_CHANGE' || n.type === 'DEBT_ALERT'
+        );
+        if (urgent.length > 0) {
+          sendNotification(urgent[0].title, urgent[0].message);
+        }
+      }
+
+      console.log(`[VetClaim] Unified sync complete. ${notifications.length} notification(s).`);
+      updateBadge();
+      return;
+    }
+
+    // If unified endpoint not available yet, fall back to individual syncs
+    console.warn('[VetClaim] Unified sync failed, falling back to individual endpoints');
+    await fallbackIndividualSync(data, accessToken);
   } catch (err) {
-    console.error('[VetClaim] Sync error:', err);
+    console.error('[VetClaim] Unified sync error, falling back:', err);
+    const data2 = await chrome.storage.local.get([
+      'vaClaims', 'vaRatings', 'vaAppeals', 'vaPayments', '_rawClaims'
+    ]);
+    await fallbackIndividualSync(data2, accessToken);
+  }
+}
+
+// Legacy individual sync (backward compatibility during rollout)
+async function fallbackIndividualSync(data, accessToken) {
+  const tasks = [];
+
+  if (data.vaClaims?.length > 0) {
+    tasks.push(syncClaimsToVetClaim(data.vaClaims, data._rawClaims, accessToken));
+  }
+  if (data.vaRatings) {
+    tasks.push(syncRatingsToVetClaim(data.vaRatings, accessToken));
+  }
+  if (data.vaAppeals?.length > 0) {
+    tasks.push(syncAppealsToVetClaim(data.vaAppeals, accessToken));
+  }
+  if (data.vaPayments?.length > 0) {
+    tasks.push(syncPaymentsToVetClaim(data.vaPayments, accessToken));
+  }
+
+  await Promise.allSettled(tasks);
+  await chrome.storage.local.set({ lastSync: Date.now() });
+}
+
+// Legacy individual sync functions (kept for fallback)
+async function syncClaimsToVetClaim(claims, rawJson, accessToken) {
+  try {
+    const endpoint = claims.length === 1 ? '/va-sync' : '/va-sync/batch';
+    const body = claims.length === 1
+      ? { claimData: claims[0], rawData: rawJson?.data ?? null, dataType: 'benefit_claim', timestamp: Date.now() }
+      : { claims: claims.map((c, i) => ({ structured: c, raw: rawJson?.data?.[i] ?? null, lastUpdated: Date.now() })), timestamp: Date.now() };
+
+    const res = await fetch(`${CONFIG.apiBaseUrl}${endpoint}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${accessToken}`,
+        'X-Extension-Version': chrome.runtime.getManifest().version
+      },
+      body: JSON.stringify(body)
+    });
+
+    if (res?.status === 401) {
+      const refreshed = await refreshAuthToken();
+      if (refreshed) return syncClaimsToVetClaim(claims, rawJson, refreshed.accessToken);
+    }
+    console.log('[VetClaim] Claims sync complete');
+  } catch (err) {
+    console.error('[VetClaim] Claims sync error:', err);
+  }
+}
+
+async function syncRatingsToVetClaim(ratings, accessToken) {
+  if (!ratings) return;
+  try {
+    const res = await fetch(`${CONFIG.apiBaseUrl}/va-sync/ratings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}`, 'X-Extension-Version': chrome.runtime.getManifest().version },
+      body: JSON.stringify({ combinedRating: ratings.combinedRating, individualRatings: ratings.individualRatings, timestamp: Date.now() })
+    });
+    if (res?.status === 401) { const r = await refreshAuthToken(); if (r) return syncRatingsToVetClaim(ratings, r.accessToken); }
+    console.log(`[VetClaim] Ratings synced: combined=${ratings.combinedRating}%`);
+  } catch (err) { console.error('[VetClaim] Ratings sync error:', err); }
+}
+
+async function syncAppealsToVetClaim(appeals, accessToken) {
+  if (!appeals?.length) return;
+  try {
+    const res = await fetch(`${CONFIG.apiBaseUrl}/va-sync/appeals`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}`, 'X-Extension-Version': chrome.runtime.getManifest().version },
+      body: JSON.stringify({ appeals, timestamp: Date.now() })
+    });
+    if (res?.status === 401) { const r = await refreshAuthToken(); if (r) return syncAppealsToVetClaim(appeals, r.accessToken); }
+    console.log(`[VetClaim] Appeals synced: ${appeals.length}`);
+  } catch (err) { console.error('[VetClaim] Appeals sync error:', err); }
+}
+
+async function syncPaymentsToVetClaim(payments, accessToken) {
+  if (!payments?.length) return;
+  try {
+    const res = await fetch(`${CONFIG.apiBaseUrl}/va-sync/payments`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}`, 'X-Extension-Version': chrome.runtime.getManifest().version },
+      body: JSON.stringify({ payments, timestamp: Date.now() })
+    });
+    if (res?.status === 401) { const r = await refreshAuthToken(); if (r) return syncPaymentsToVetClaim(payments, r.accessToken); }
+    console.log(`[VetClaim] Payments synced: ${payments.length}`);
+  } catch (err) { console.error('[VetClaim] Payments sync error:', err); }
+}
+
+// ─── Badge Management ──────────────────────────────────────────────────
+async function updateBadge() {
+  const data = await chrome.storage.local.get(['pendingAlerts', 'vaClaims', 'vaIntentToFile']);
+  let alertCount = 0;
+  let urgent = false;
+
+  // Count pending alerts
+  if (data.pendingAlerts?.length > 0) {
+    alertCount = data.pendingAlerts.length;
+    urgent = data.pendingAlerts.some(a =>
+      a.type === 'DEADLINE_REMINDER' || a.type === 'DEBT_ALERT'
+    );
+  }
+
+  // Count claims needing docs
+  if (data.vaClaims) {
+    const docsNeeded = data.vaClaims.filter(c => c.documentsNeeded).length;
+    alertCount += docsNeeded;
+    if (docsNeeded > 0) urgent = true;
+  }
+
+  // Check ITF expirations
+  if (data.vaIntentToFile?.intents) {
+    const now = Date.now();
+    const thirtyDays = 30 * 24 * 60 * 60 * 1000;
+    const expiring = data.vaIntentToFile.intents.filter(i => {
+      if (i.status?.toLowerCase() !== 'active') return false;
+      const exp = new Date(i.expirationDate).getTime();
+      return !isNaN(exp) && (exp - now) < thirtyDays;
+    });
+    alertCount += expiring.length;
+    if (expiring.length > 0) urgent = true;
+  }
+
+  if (alertCount > 0) {
+    chrome.action.setBadgeText({ text: String(alertCount) });
+    chrome.action.setBadgeBackgroundColor({ color: urgent ? '#e53e3e' : '#f0c040' });
+  } else {
+    chrome.action.setBadgeText({ text: '' });
   }
 }
 
@@ -377,7 +726,6 @@ async function refreshAuthToken() {
 // ─── Message Handler ────────────────────────────────────────────────────
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   switch (msg.type) {
-    // Auth tokens from web app via auth-bridge.js
     case 'VETCLAIM_AUTH_TOKENS':
       chrome.storage.local.set({
         accessToken:  msg.accessToken,
@@ -386,24 +734,32 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       }).then(() => sendResponse({ success: true }));
       return true;
 
-    // Popup / content script asks for auth status
     case 'REQUEST_AUTH_STATUS':
       checkAuthStatus().then(sendResponse);
       return true;
 
-    // Popup / content script asks for cached VA data
     case 'REQUEST_VA_DATA':
       chrome.storage.local.get([
-        'vaClaims', 'vaRatings', 'vaAppeals', 'vaLoggedIn', 'vaLastFetch', 'lastSync'
+        'vaClaims', 'vaRatings', 'vaAppeals', 'vaPayments',
+        'vaServiceHistory', 'vaIntentToFile', 'vaBenefitLetters',
+        'vaDebts', 'vaDependents', 'vaDocuments',
+        'vaLoggedIn', 'vaLastFetch', 'lastSync',
+        'lastSyncChanges', 'pendingAlerts'
       ]).then(sendResponse);
       return true;
 
-    // Manual "Sync Now" from popup
     case 'TRIGGER_VA_FETCH':
-      lastVaFetch = 0; // bypass cooldown
+      lastVaFetch = 0;
       fetchAllVaData()
         .then(() => sendResponse({ success: true }))
         .catch(e => sendResponse({ error: e.message }));
+      return true;
+
+    case 'CLEAR_ALERTS':
+      chrome.storage.local.set({ pendingAlerts: [] }).then(() => {
+        updateBadge();
+        sendResponse({ success: true });
+      });
       return true;
 
     default:
@@ -414,11 +770,10 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 // ─── Periodic Re-sync ───────────────────────────────────────────────────
 setInterval(async () => {
   const auth = await checkAuthStatus();
-  const { vaClaims } = await chrome.storage.local.get('vaClaims');
-  if (auth.authenticated && vaClaims?.length > 0) {
-    console.log('[VetClaim] Periodic re-sync…');
-    await syncClaimsToVetClaim(vaClaims, null, auth.accessToken);
-  }
+  if (!auth.authenticated) return;
+
+  console.log('[VetClaim] Periodic re-sync…');
+  await syncAllToVetClaim(auth.accessToken);
 }, CONFIG.syncInterval);
 
 // ─── Notification Helper ────────────────────────────────────────────────
@@ -431,5 +786,18 @@ function sendNotification(title, message) {
     priority: 1
   });
 }
+
+// ─── Auto-fetch on startup ─────────────────────────────────────────────
+(async () => {
+  try {
+    await new Promise(r => setTimeout(r, 2000));
+    console.log('[VetClaim] Auto-fetching VA.gov data on startup…');
+    lastVaFetch = 0;
+    await fetchAllVaData();
+    console.log('[VetClaim] Startup fetch complete');
+  } catch (err) {
+    console.log('[VetClaim] Startup fetch skipped:', err?.message);
+  }
+})();
 
 console.log('[VetClaim] Service worker initialized');
