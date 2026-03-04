@@ -24,7 +24,8 @@ const VA_ENDPOINTS = {
   debts:              '/v0/debts',
   copays:             '/v0/medical_copays',
   dependents:         '/v0/dependents',
-  documents:          '/v0/efolder'
+  documents:          '/v0/efolder',
+  claimLetters:       '/v0/claim_letters'
 };
 
 let lastVaFetch = 0;
@@ -47,6 +48,7 @@ chrome.runtime.onInstalled.addListener((details) => {
       vaDebts: null,
       vaDependents: null,
       vaDocuments: null,
+      vaClaimLetters: null,
       vaLoggedIn: false,
       lastSync: null,
       pendingAlerts: [],
@@ -98,7 +100,8 @@ async function fetchAllVaData() {
   // Fetch all endpoints in parallel
   const [
     claimsRes, ratingsRes, appealsRes, paymentsRes,
-    serviceHistoryRes, itfRes, lettersRes, debtsRes, copaysRes, dependentsRes, documentsRes
+    serviceHistoryRes, itfRes, lettersRes, debtsRes, copaysRes, dependentsRes, documentsRes,
+    claimLettersRes
   ] = await Promise.allSettled([
     fetchVaEndpoint(VA_ENDPOINTS.claims),
     fetchVaEndpoint(VA_ENDPOINTS.ratedDisabilities),
@@ -110,7 +113,8 @@ async function fetchAllVaData() {
     fetchVaEndpoint(VA_ENDPOINTS.debts),
     fetchVaEndpoint(VA_ENDPOINTS.copays),
     fetchVaEndpoint(VA_ENDPOINTS.dependents),
-    fetchVaEndpoint(VA_ENDPOINTS.documents)
+    fetchVaEndpoint(VA_ENDPOINTS.documents),
+    fetchVaEndpoint(VA_ENDPOINTS.claimLetters)
   ]);
 
   const settled = (r) => r.status === 'fulfilled' ? r.value : null;
@@ -125,6 +129,7 @@ async function fetchAllVaData() {
   const copaysJson   = settled(copaysRes);
   const dependentsJson = settled(dependentsRes);
   const documentsJson = settled(documentsRes);
+  const claimLettersJson = settled(claimLettersRes);
 
   // ── Parse claims (list gives minimal data, so fetch each detail) ──────
   let parsedClaims = [];
@@ -314,18 +319,38 @@ async function fetchAllVaData() {
     };
   }
 
-  // ── Parse documents ───────────────────────────────────────────────────
+  // ── Parse documents (eFolder returns a plain array, not { data: [...] })
   let parsedDocuments = null;
-  if (documentsJson?.data) {
-    const items = Array.isArray(documentsJson.data) ? documentsJson.data : [];
+  const efolderItems = Array.isArray(documentsJson) ? documentsJson
+    : (documentsJson?.data ? (Array.isArray(documentsJson.data) ? documentsJson.data : []) : []);
+  if (efolderItems.length > 0) {
     parsedDocuments = {
-      documents: items.map(d => ({
+      documents: efolderItems.map(d => ({
         documentId:      d.document_id || d.documentId || d.id || '',
         typeDescription: d.type_description || d.typeDescription || '',
         receivedAt:      d.received_at || d.receivedAt || d.upload_date || ''
       })),
-      totalCount: items.length
+      totalCount: efolderItems.length
     };
+  }
+
+  // ── Parse claim letters (/v0/claim_letters — decision/notification letters)
+  let parsedClaimLetters = null;
+  const claimLetterItems = Array.isArray(claimLettersJson) ? claimLettersJson
+    : (claimLettersJson?.data ? (Array.isArray(claimLettersJson.data) ? claimLettersJson.data : []) : []);
+  if (claimLetterItems.length > 0) {
+    parsedClaimLetters = {
+      documents: claimLetterItems.map(d => ({
+        documentId:      d.document_id || d.documentId || d.id || '',
+        typeDescription: d.type_description || d.typeDescription || '',
+        subject:         d.subject || '',
+        docType:         d.doc_type || d.docType || '',
+        receivedAt:      d.received_at || d.receivedAt || d.upload_date || '',
+        mimeType:        d.mime_type || d.mimeType || 'application/pdf'
+      })),
+      totalCount: claimLetterItems.length
+    };
+    console.log(`[VetClaim] Found ${parsedClaimLetters.totalCount} claim letters from VA`);
   }
 
   // ── Persist locally ───────────────────────────────────────────────────
@@ -340,6 +365,7 @@ async function fetchAllVaData() {
     vaDebts:           parsedDebts,
     vaDependents:      parsedDependents,
     vaDocuments:       parsedDocuments,
+    vaClaimLetters:    parsedClaimLetters,
     vaLastFetch:       Date.now(),
     _rawClaims:        claimsJson,
     _rawRatings:       ratingsJson,
@@ -359,9 +385,9 @@ async function fetchAllVaData() {
   if (auth.authenticated) {
     await syncAllToVetClaim(auth.accessToken);
 
-    // Fire-and-forget: auto-analyze decision/denial letters from eFolder
-    if (parsedDocuments?.documents?.length > 0) {
-      processDecisionLetters(parsedDocuments.documents, auth.accessToken).catch(err => {
+    // Fire-and-forget: auto-analyze decision/denial letters from /v0/claim_letters
+    if (parsedClaimLetters?.documents?.length > 0) {
+      processDecisionLetters(parsedClaimLetters.documents, auth.accessToken).catch(err => {
         console.error('[VetClaim] Decision letter processing error:', err);
       });
     }
@@ -393,30 +419,35 @@ async function fetchAllVaData() {
 // ─── Decision Letter Auto-Analysis ──────────────────────────────────────
 
 /**
- * Classify a VA eFolder document by its typeDescription.
+ * Classify a VA claim letter by its typeDescription and docType.
+ * VA /v0/claim_letters uses doc_type "184" for claim decisions.
  * Returns 'DECISION_LETTER', 'DENIAL_LETTER', or null.
  */
-function classifyVaDocument(typeDescription) {
-  if (!typeDescription) return null;
-  const desc = typeDescription.toLowerCase();
-  const decisionPatterns = ['decision letter', 'rating decision', 'notification letter', 'decision notice'];
-  const denialPatterns = ['denial letter', 'denial notice', 'denial of claim'];
-  for (const p of denialPatterns) {
-    if (desc.includes(p)) return 'DENIAL_LETTER';
+function classifyVaDocument(typeDescription, docType) {
+  if (!typeDescription && !docType) return null;
+  const desc = (typeDescription || '').toLowerCase();
+
+  // doc_type 184 = "Claim decision (or other notification, like Intent to File)"
+  if (docType === '184' || desc.includes('claim decision') || desc.includes('rating decision')
+      || desc.includes('decision letter') || desc.includes('decision notice')
+      || desc.includes('notification letter')) {
+    return 'DECISION_LETTER';
   }
-  for (const p of decisionPatterns) {
-    if (desc.includes(p)) return 'DECISION_LETTER';
+
+  if (desc.includes('denial letter') || desc.includes('denial notice') || desc.includes('denial of claim')) {
+    return 'DENIAL_LETTER';
   }
+
   return null;
 }
 
 /**
- * Fetch actual PDF binary from VA eFolder.
+ * Fetch actual PDF binary from VA /v0/claim_letters/{id}.
  * Returns { blob, contentType } or null.
  */
 async function fetchVaDocumentBinary(documentId) {
   try {
-    const res = await fetch(`${CONFIG.vaApiBase}/v0/efolder/documents/${documentId}`, {
+    const res = await fetch(`${CONFIG.vaApiBase}/v0/claim_letters/${documentId}`, {
       credentials: 'include',
       headers: { 'Accept': 'application/pdf' }
     });
@@ -486,8 +517,8 @@ async function uploadVaDocumentToVetClaim(documentId, blob, contentType, documen
 }
 
 /**
- * Orchestrator: find decision/denial letters in eFolder, download PDFs,
- * and upload them to VetClaim for AI analysis.
+ * Orchestrator: find decision/denial letters from /v0/claim_letters,
+ * download PDFs, and upload them to VetClaim for AI analysis.
  */
 async function processDecisionLetters(documents, accessToken) {
   const MAX_RETRIES = 3;
@@ -497,7 +528,7 @@ async function processDecisionLetters(documents, accessToken) {
   // Filter for decision/denial letters not already uploaded
   const candidates = [];
   for (const doc of documents) {
-    const docType = classifyVaDocument(doc.typeDescription);
+    const docType = classifyVaDocument(doc.typeDescription, doc.docType);
     if (!docType) continue;
 
     const existing = uploaded[doc.documentId];
