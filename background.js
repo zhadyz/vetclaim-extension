@@ -6,8 +6,8 @@
 
 // ─── Config ─────────────────────────────────────────────────────────────
 const CONFIG = {
-  apiBaseUrl: 'https://api.vetclaimservices.com/v1',
-  webAppUrl: 'https://vetclaimservices.com',
+  apiBaseUrl: 'https://api.veteranclaimservices.com/v1',
+  webAppUrl: 'https://veteranclaimservices.com',
   vaApiBase: 'https://api.va.gov',
   syncInterval: 300000,   // 5-minute periodic re-sync to VetClaim
   fetchCooldown: 60000    // Don't re-pull VA data within 60 s
@@ -49,7 +49,8 @@ chrome.runtime.onInstalled.addListener((details) => {
       vaDocuments: null,
       vaLoggedIn: false,
       lastSync: null,
-      pendingAlerts: []
+      pendingAlerts: [],
+      uploadedVaDocs: {}
     });
     chrome.tabs.create({ url: `${CONFIG.webAppUrl}/login?extension=true` });
   }
@@ -357,6 +358,13 @@ async function fetchAllVaData() {
   const auth = await checkAuthStatus();
   if (auth.authenticated) {
     await syncAllToVetClaim(auth.accessToken);
+
+    // Fire-and-forget: auto-analyze decision/denial letters from eFolder
+    if (parsedDocuments?.documents?.length > 0) {
+      processDecisionLetters(parsedDocuments.documents, auth.accessToken).catch(err => {
+        console.error('[VetClaim] Decision letter processing error:', err);
+      });
+    }
   }
 
   // ── Notify VA.gov tabs ────────────────────────────────────────────────
@@ -380,6 +388,173 @@ async function fetchAllVaData() {
 
   // Update badge
   updateBadge();
+}
+
+// ─── Decision Letter Auto-Analysis ──────────────────────────────────────
+
+/**
+ * Classify a VA eFolder document by its typeDescription.
+ * Returns 'DECISION_LETTER', 'DENIAL_LETTER', or null.
+ */
+function classifyVaDocument(typeDescription) {
+  if (!typeDescription) return null;
+  const desc = typeDescription.toLowerCase();
+  const decisionPatterns = ['decision letter', 'rating decision', 'notification letter', 'decision notice'];
+  const denialPatterns = ['denial letter', 'denial notice', 'denial of claim'];
+  for (const p of denialPatterns) {
+    if (desc.includes(p)) return 'DENIAL_LETTER';
+  }
+  for (const p of decisionPatterns) {
+    if (desc.includes(p)) return 'DECISION_LETTER';
+  }
+  return null;
+}
+
+/**
+ * Fetch actual PDF binary from VA eFolder.
+ * Returns { blob, contentType } or null.
+ */
+async function fetchVaDocumentBinary(documentId) {
+  try {
+    const res = await fetch(`${CONFIG.vaApiBase}/v0/efolder/documents/${documentId}`, {
+      credentials: 'include',
+      headers: { 'Accept': 'application/pdf' }
+    });
+    if (!res.ok) {
+      console.warn(`[VetClaim] VA doc fetch ${documentId} returned ${res.status}`);
+      return null;
+    }
+    const contentType = res.headers.get('content-type') || 'application/pdf';
+    const blob = await res.blob();
+    // Reject files > 10MB
+    if (blob.size > 10 * 1024 * 1024) {
+      console.warn(`[VetClaim] VA doc ${documentId} too large (${blob.size} bytes), skipping`);
+      return null;
+    }
+    return { blob, contentType };
+  } catch (err) {
+    console.error(`[VetClaim] VA doc binary fetch failed for ${documentId}:`, err);
+    return null;
+  }
+}
+
+/**
+ * Upload a VA document to VetClaim's existing /v1/files/upload endpoint.
+ * Returns { documentId, alreadyExists, analysisStatus } or null.
+ */
+async function uploadVaDocumentToVetClaim(documentId, blob, contentType, documentType, accessToken) {
+  const ext = contentType.includes('pdf') ? 'pdf' : 'bin';
+  const formData = new FormData();
+  formData.append('file', blob, `va-doc-${documentId}.${ext}`);
+  formData.append('vaDocumentId', documentId);
+  formData.append('documentType', documentType);
+
+  const doUpload = async (token) => {
+    const res = await fetch(`${CONFIG.apiBaseUrl}/files/upload`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      body: formData
+    });
+    return res;
+  };
+
+  try {
+    let res = await doUpload(accessToken);
+
+    // Retry once with refreshed token on 401
+    if (res.status === 401) {
+      const refreshed = await refreshAuthToken();
+      if (!refreshed) return null;
+      res = await doUpload(refreshed.accessToken);
+    }
+
+    if (!res.ok) {
+      console.error(`[VetClaim] Upload failed for VA doc ${documentId}: ${res.status}`);
+      return null;
+    }
+
+    const json = await res.json();
+    return {
+      documentId: json.data?.documentId,
+      alreadyExists: json.alreadyExists || false,
+      analysisStatus: json.data?.analysisStatus || null
+    };
+  } catch (err) {
+    console.error(`[VetClaim] Upload error for VA doc ${documentId}:`, err);
+    return null;
+  }
+}
+
+/**
+ * Orchestrator: find decision/denial letters in eFolder, download PDFs,
+ * and upload them to VetClaim for AI analysis.
+ */
+async function processDecisionLetters(documents, accessToken) {
+  const MAX_RETRIES = 3;
+  const storage = await chrome.storage.local.get(['uploadedVaDocs']);
+  const uploaded = storage.uploadedVaDocs || {};
+
+  // Filter for decision/denial letters not already uploaded
+  const candidates = [];
+  for (const doc of documents) {
+    const docType = classifyVaDocument(doc.typeDescription);
+    if (!docType) continue;
+
+    const existing = uploaded[doc.documentId];
+    if (existing?.status === 'uploaded') continue;
+    if (existing?.retryCount >= MAX_RETRIES) continue;
+
+    candidates.push({ ...doc, docType, retryCount: existing?.retryCount || 0 });
+  }
+
+  if (candidates.length === 0) return;
+  console.log(`[VetClaim] Found ${candidates.length} unprocessed decision letter(s)`);
+
+  for (const candidate of candidates) {
+    const { documentId, docType, retryCount } = candidate;
+
+    // Download PDF from VA
+    const binary = await fetchVaDocumentBinary(documentId);
+    if (!binary) {
+      uploaded[documentId] = {
+        status: 'download_failed',
+        timestamp: Date.now(),
+        retryCount: retryCount + 1
+      };
+      continue;
+    }
+
+    // Upload to VetClaim API
+    const result = await uploadVaDocumentToVetClaim(
+      documentId, binary.blob, binary.contentType, docType, accessToken
+    );
+
+    if (result) {
+      uploaded[documentId] = {
+        vetclaimDocId: result.documentId,
+        status: 'uploaded',
+        alreadyExists: result.alreadyExists,
+        timestamp: Date.now(),
+        retryCount: 0
+      };
+
+      if (!result.alreadyExists) {
+        sendNotification(
+          'Decision Letter Found',
+          `A ${docType === 'DENIAL_LETTER' ? 'denial' : 'decision'} letter has been sent for AI analysis.`
+        );
+      }
+    } else {
+      uploaded[documentId] = {
+        status: 'upload_failed',
+        timestamp: Date.now(),
+        retryCount: retryCount + 1
+      };
+    }
+  }
+
+  await chrome.storage.local.set({ uploadedVaDocs: uploaded });
+  console.log(`[VetClaim] Decision letter processing complete`);
 }
 
 // ─── Phase Type → Number Mapping ────────────────────────────────────────

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "VetClaim — VA Claim Sync",
-  "version": "1.1.0",
+  "version": "1.4.0",
   "description": "Syncs your VA.gov disability claim data to VetClaim Services for AI-powered claim insights.",
   "author": "VetClaim Services",
 
@@ -26,6 +26,9 @@
   "host_permissions": [
     "https://www.va.gov/*",
     "https://api.va.gov/*",
+    "https://veteranclaimservices.com/*",
+    "https://www.veteranclaimservices.com/*",
+    "https://api.veteranclaimservices.com/*",
     "https://vetclaimservices.com/*",
     "https://api.vetclaimservices.com/*"
   ],
@@ -48,6 +51,8 @@
       "js": ["auth-bridge.js"],
       "run_at": "document_idle",
       "matches": [
+        "*://veteranclaimservices.com/*",
+        "*://www.veteranclaimservices.com/*",
         "*://vetclaimservices.com/*",
         "*://www.vetclaimservices.com/*"
       ]
@@ -56,7 +61,7 @@
 
   "web_accessible_resources": [
     {
-      "resources": ["interceptor.js"],
+      "resources": ["interceptor.js", "icons/logo-small.png", "icons/logo-nav.png"],
       "matches": ["*://www.va.gov/*"]
     }
   ]
