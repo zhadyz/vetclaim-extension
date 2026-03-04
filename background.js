@@ -972,6 +972,13 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       });
       return true;
 
+    case 'CLEAR_UPLOAD_TRACKING':
+      chrome.storage.local.set({ uploadedVaDocs: {} }).then(() => {
+        console.log('[VetClaim] Upload tracking cleared');
+        sendResponse({ success: true });
+      });
+      return true;
+
     default:
       return false;
   }
