@@ -476,9 +476,10 @@ async function fetchVaDocumentBinary(documentId) {
 async function uploadVaDocumentToVetClaim(documentId, blob, contentType, documentType, accessToken) {
   const ext = contentType.includes('pdf') ? 'pdf' : 'bin';
   const formData = new FormData();
-  formData.append('file', blob, `va-doc-${documentId}.${ext}`);
+  // Text fields MUST come before the file for @fastify/multipart to parse them
   formData.append('vaDocumentId', documentId);
   formData.append('documentType', documentType);
+  formData.append('file', blob, `va-doc-${documentId}.${ext}`);
 
   const doUpload = async (token) => {
     const res = await fetch(`${CONFIG.apiBaseUrl}/files/upload`, {
@@ -555,7 +556,10 @@ async function processDecisionLetters(documents, accessToken) {
       continue;
     }
 
-    // Upload to VetClaim API
+    // Upload to VetClaim API (with delay between uploads to avoid rate limits)
+    if (candidates.indexOf(candidate) > 0) {
+      await new Promise(r => setTimeout(r, 5000)); // 5s between uploads
+    }
     const result = await uploadVaDocumentToVetClaim(
       documentId, binary.blob, binary.contentType, docType, accessToken
     );
