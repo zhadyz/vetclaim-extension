@@ -1007,6 +1007,10 @@ function sendNotification(title, message) {
 // ─── Auto-fetch on startup ─────────────────────────────────────────────
 (async () => {
   try {
+    // Clear stale upload tracking on every startup so dedup relies on API-side check
+    await chrome.storage.local.set({ uploadedVaDocs: {} });
+    console.log('[VetClaim] Cleared upload tracking on startup');
+
     await new Promise(r => setTimeout(r, 2000));
     console.log('[VetClaim] Auto-fetching VA.gov data on startup…');
     lastVaFetch = 0;
